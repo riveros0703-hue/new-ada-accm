@@ -164,7 +164,13 @@ const App: React.FC = () => {
       ;(window as any).ACCM_onUploadDone = (ok: boolean, message?: string) => {
         if (ok) setSuccessModal('Record uploaded. Preparing next call...'); else setErrorModal(message || 'Upload failed');
       };
-      ;(window as any).ACCM_onCountdown = (sec: number) => setCountdown(sec);
+      ;(window as any).ACCM_onCountdown = (sec: number) => {
+        // if countdown hits 0 and there is no next number in queue, clear it to avoid being stuck
+        if (sec <= 0) {
+          setTimeout(() => setCountdown(null), 800);
+        }
+        setCountdown(sec);
+      };
     } catch (e) {
       // ignore in browser
     }
@@ -476,6 +482,7 @@ const App: React.FC = () => {
         </div>
         <div className="mt-3 text-[11px] text-gray-400">
           Queue: {queue.length} {queue.length > 0 ? `· ${queue[0]} → ${queue[queue.length - 1]}` : ''}
+          {queue.length === 0 && <span className="text-rose-400"> · No numbers to dial</span>}
         </div>
       </Card>
 
@@ -521,9 +528,16 @@ const App: React.FC = () => {
               <Input 
                 value={state.last4}
                 onChange={(e) => {
-                  const v = e.target.value.replace(/\D/g, '').slice(0, 4);
-                  setState(p => ({ ...p, last4: v.padStart(4, '0') }));
+                  // allow clearing input without auto-padding; pad only when non-empty
+                  const raw = e.target.value.replace(/\D/g, '').slice(0, 4);
+                  setState(p => ({ ...p, last4: raw }));
                 }}
+                onBlur={(e) => {
+                  const raw = (e.target.value || '').replace(/\D/g, '').slice(0, 4);
+                  const padded = raw.length ? raw.padStart(4, '0') : '';
+                  setState(p => ({ ...p, last4: padded }));
+                }}
+                placeholder="0000"
                 className="flex-grow"
               />
               <Input 
@@ -614,7 +628,12 @@ const App: React.FC = () => {
             onClick={() => {
               try {
                 const numbers = queue;
-                if (!numbers.length) { setErrorModal('Queue is empty. Adjust Last 4 or Attempts.'); return; }
+                if (!numbers.length) {
+                  // ensure countdown cleared if previously set
+                  setCountdown(null);
+                  setErrorModal('Queue is empty. Adjust Last 4 or Attempts.');
+                  return;
+                }
                 const sa: any = (window as any).AndroidApp;
                 const intervalMs = Math.max(1000, (state.interval || 5) * 1000);
                 if (sa && typeof sa.startDial === 'function') {
