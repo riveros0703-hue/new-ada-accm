@@ -88,6 +88,7 @@ const App: React.FC = () => {
     isDialerActive: true,
     callLogs: []
   });
+  const DEFAULT_SHEET = '1UuE_F_zRG2SbHqJL5EZz9g8-9Rr75gUCEBwhLn3jtTg';
 
   const [activeModal, setActiveModal] = useState<ModalType>(null);
 
@@ -97,7 +98,16 @@ const App: React.FC = () => {
     [state.baseNumber, state.last4, state.attempts, state.isShuffle]
   );
 
-  const handleSave = () => console.log('Saving config...', state);
+  const handleSave = () => {
+    // persist full admin details
+    saveAdmin({
+      agentName: state.agentName,
+      branchName: state.branchName,
+      series: state.series ?? state.baseNumber,
+      googleSheetId: state.googleSheetId || DEFAULT_SHEET
+    });
+    setSuccessModal('Settings saved');
+  };
   const closeModal = () => setActiveModal(null);
 
   // Admin + reports state
@@ -107,6 +117,9 @@ const App: React.FC = () => {
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const [errorModal, setErrorModal] = useState<string | null>(null);
+  const [successModal, setSuccessModal] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [postCallInterval, setPostCallInterval] = useState<number>(12);
 
   const showToast = (msg: string, ms = 2000) => {
     setToast(msg);
@@ -133,7 +146,7 @@ const App: React.FC = () => {
             agentName: parsed.agentName || prev.agentName,
             branchName: parsed.branchName || prev.branchName,
             series: parsed.series || prev.series,
-            googleSheetId: parsed.googleSheetId || prev.googleSheetId
+            googleSheetId: parsed.googleSheetId || prev.googleSheetId || DEFAULT_SHEET
           }));
         } catch (e) {
           setErrorModal(`Failed to parse native admin data: ${String(e)}`);
@@ -143,6 +156,15 @@ const App: React.FC = () => {
       ;(window as any).ACCM_onError = (msg: string) => {
         setErrorModal(String(msg || 'Unknown error'));
       };
+      ;(window as any).ACCM_onInfo = (msg: string) => {
+        setSuccessModal(String(msg || 'Success'));
+      };
+      // native can notify upload progress and countdown
+      ;(window as any).ACCM_onUploadStart = () => setSuccessModal('Uploading Record...');
+      ;(window as any).ACCM_onUploadDone = (ok: boolean, message?: string) => {
+        if (ok) setSuccessModal('Record uploaded. Preparing next call...'); else setErrorModal(message || 'Upload failed');
+      };
+      ;(window as any).ACCM_onCountdown = (sec: number) => setCountdown(sec);
     } catch (e) {
       // ignore in browser
     }
@@ -159,25 +181,22 @@ const App: React.FC = () => {
 
   const saveAdmin = (payload: Partial<AppState>) => {
     try {
-      localStorage.setItem('accm_admin', JSON.stringify(payload));
-      setState(p => ({ ...p, ...payload }));
+      const toSave = {
+        agentName: payload.agentName ?? state.agentName,
+        branchName: payload.branchName ?? state.branchName,
+        series: payload.series ?? state.series ?? state.baseNumber,
+        googleSheetId: payload.googleSheetId ?? state.googleSheetId ?? DEFAULT_SHEET
+      };
+      localStorage.setItem('accm_admin', JSON.stringify(toSave));
+      setState(p => ({ ...p, ...toSave }));
       // also persist to Android if available
       const sa: any = (window as any).AndroidApp;
       if (sa) {
         try {
           if (typeof sa.saveAdminEx === 'function') {
-            sa.saveAdminEx(
-              payload.agentName ?? state.agentName,
-              payload.series ?? state.series ?? state.baseNumber,
-              payload.googleSheetId ?? state.googleSheetId ?? '',
-              payload.branchName ?? state.branchName ?? ''
-            );
+            sa.saveAdminEx(toSave.agentName, toSave.series, toSave.googleSheetId, toSave.branchName);
           } else if (typeof sa.saveAdmin === 'function') {
-            sa.saveAdmin(
-              payload.agentName ?? state.agentName,
-              payload.series ?? state.series ?? state.baseNumber,
-              payload.googleSheetId ?? state.googleSheetId ?? ''
-            );
+            sa.saveAdmin(toSave.agentName, toSave.series, toSave.googleSheetId);
           }
         } catch (e) {
           setErrorModal(`Native saveAdmin failed: ${String(e)}`);
@@ -534,6 +553,18 @@ const App: React.FC = () => {
             </div>
           </div>
 
+          <div>
+            <span className="text-gray-500 text-[10px] uppercase font-bold block mb-2">Post-call Wait (Seconds)</span>
+            <div className="flex gap-2">
+              <Input 
+                value={postCallInterval}
+                onChange={(e) => setPostCallInterval(Math.max(0, parseInt(e.target.value.replace(/\D/g, '') || '0')))}
+              />
+              <button className="bg-purple-600 hover:bg-purple-700 px-4 rounded-lg font-bold text-xs">Set</button>
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1">Delay before next call after uploading record. Default 12s.</p>
+          </div>
+
           <div className="pt-2 border-t border-[#2d3142] space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-gray-300 text-[10px] font-bold uppercase">Auto SMS (Unanswered)</span>
@@ -587,7 +618,14 @@ const App: React.FC = () => {
                 const sa: any = (window as any).AndroidApp;
                 const intervalMs = Math.max(1000, (state.interval || 5) * 1000);
                 if (sa && typeof sa.startDial === 'function') {
+                  // pass interval and post-call wait to native
                   sa.startDial(JSON.stringify(numbers), intervalMs);
+                  if (typeof sa.setPostCallInterval === 'function') {
+                    sa.setPostCallInterval(Math.max(0, postCallInterval) * 1000);
+                  }
+                  if (typeof sa.setDefaultSheetId === 'function') {
+                    sa.setDefaultSheetId(state.googleSheetId || DEFAULT_SHEET);
+                  }
                   showToast(`Starting auto-dial of ${numbers.length} numbers`);
                 } else {
                   // Browser fallback: attempt to open the first tel link
@@ -689,7 +727,7 @@ const App: React.FC = () => {
             </div>
             <div className="flex gap-2 pt-2">
               <button onClick={() => setShowAdminModal(false)} className="flex-1 bg-[#2d3142] py-2 rounded-lg font-bold">Cancel</button>
-              <button onClick={() => { saveAdmin({ agentName: state.agentName, googleSheetId: state.googleSheetId, series: state.series }); setShowAdminModal(false); }} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Save</button>
+              <button onClick={() => { saveAdmin({ agentName: state.agentName, branchName: state.branchName, googleSheetId: state.googleSheetId, series: state.series }); setShowAdminModal(false); }} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Save</button>
             </div>
           </div>
         </Modal>
@@ -782,6 +820,26 @@ const App: React.FC = () => {
           <div className="space-y-4">
             <p className="text-sm text-rose-300 whitespace-pre-wrap">{errorModal}</p>
             <button onClick={() => setErrorModal(null)} className="w-full bg-rose-600 py-2 rounded-lg font-bold">Close</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Success/Info Modal */}
+      {successModal && (
+        <Modal title="Info" onClose={() => setSuccessModal(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-emerald-300 whitespace-pre-wrap">{successModal}</p>
+            <button onClick={() => setSuccessModal(null)} className="w-full bg-emerald-600 py-2 rounded-lg font-bold">Close</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Countdown Modal */}
+      {typeof countdown === 'number' && countdown >= 0 && (
+        <Modal title="Next Call" onClose={() => setCountdown(null)}>
+          <div className="space-y-4 text-center">
+            <p className="text-sm text-gray-300">Proceeding to next call in</p>
+            <div className="text-4xl font-black text-purple-400">{countdown}s</div>
           </div>
         </Modal>
       )}
