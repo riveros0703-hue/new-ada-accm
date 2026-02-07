@@ -50,6 +50,25 @@ const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void }> = (
   </button>
 );
 
+// Generate a dialing queue based on base 7-digit series, starting last4, and number of attempts
+function generateQueue(base: string, last4: string, attempts: number, shuffle: boolean): string[] {
+  const start = Math.max(0, Math.min(9999, parseInt((last4 || '0').replace(/\D/g, '') || '0', 10)));
+  const count = Math.max(0, Math.min(10000, attempts | 0));
+  const arr: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const n = (start + i) % 10000;
+    const sfx = n.toString().padStart(4, '0');
+    arr.push(`${base}${sfx}`);
+  }
+  if (shuffle) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+  }
+  return arr;
+}
+
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewType>('dialer');
   const [exporting, setExporting] = useState<string | null>(null);
@@ -72,6 +91,12 @@ const App: React.FC = () => {
 
   const [activeModal, setActiveModal] = useState<ModalType>(null);
 
+  // computed dialing queue preview
+  const queue = useMemo(
+    () => generateQueue(state.baseNumber, state.last4, state.attempts, state.isShuffle),
+    [state.baseNumber, state.last4, state.attempts, state.isShuffle]
+  );
+
   const handleSave = () => console.log('Saving config...', state);
   const closeModal = () => setActiveModal(null);
 
@@ -81,6 +106,7 @@ const App: React.FC = () => {
   const [editingLog, setEditingLog] = useState<null | CallLog>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const [errorModal, setErrorModal] = useState<string | null>(null);
 
   const showToast = (msg: string, ms = 2000) => {
     setToast(msg);
@@ -95,6 +121,32 @@ const App: React.FC = () => {
       try { const parsed = JSON.parse(saved); setState(prev => ({ ...prev, ...parsed })); } catch(e){}
     }
 
+    // try loading admin from Android bridge if present
+    try {
+      const sa: any = (window as any).AndroidApp;
+      if (sa && typeof sa.loadAdmin === 'function') {
+        const raw = sa.loadAdmin();
+        try {
+          const parsed = JSON.parse(raw || '{}');
+          setState(prev => ({
+            ...prev,
+            agentName: parsed.agentName || prev.agentName,
+            branchName: parsed.branchName || prev.branchName,
+            series: parsed.series || prev.series,
+            googleSheetId: parsed.googleSheetId || prev.googleSheetId
+          }));
+        } catch (e) {
+          setErrorModal(`Failed to parse native admin data: ${String(e)}`);
+        }
+      }
+      // register a global error hook for native to call
+      ;(window as any).ACCM_onError = (msg: string) => {
+        setErrorModal(String(msg || 'Unknown error'));
+      };
+    } catch (e) {
+      // ignore in browser
+    }
+
     const onlineHandler = () => showToast("You're Online!", 1800);
     const offlineHandler = () => showToast('No internet connection. Exporting will not work.', 4000);
     window.addEventListener('online', onlineHandler);
@@ -106,9 +158,35 @@ const App: React.FC = () => {
   }, []);
 
   const saveAdmin = (payload: Partial<AppState>) => {
-    localStorage.setItem('accm_admin', JSON.stringify(payload));
-    setState(p => ({ ...p, ...payload }));
-    showToast('Settings saved');
+    try {
+      localStorage.setItem('accm_admin', JSON.stringify(payload));
+      setState(p => ({ ...p, ...payload }));
+      // also persist to Android if available
+      const sa: any = (window as any).AndroidApp;
+      if (sa) {
+        try {
+          if (typeof sa.saveAdminEx === 'function') {
+            sa.saveAdminEx(
+              payload.agentName ?? state.agentName,
+              payload.series ?? state.series ?? state.baseNumber,
+              payload.googleSheetId ?? state.googleSheetId ?? '',
+              payload.branchName ?? state.branchName ?? ''
+            );
+          } else if (typeof sa.saveAdmin === 'function') {
+            sa.saveAdmin(
+              payload.agentName ?? state.agentName,
+              payload.series ?? state.series ?? state.baseNumber,
+              payload.googleSheetId ?? state.googleSheetId ?? ''
+            );
+          }
+        } catch (e) {
+          setErrorModal(`Native saveAdmin failed: ${String(e)}`);
+        }
+      }
+      showToast('Settings saved');
+    } catch (e) {
+      setErrorModal(`Failed to save settings: ${String(e)}`);
+    }
   };
 
   const fetchDnc = async () => {
@@ -349,7 +427,7 @@ const App: React.FC = () => {
           </button>
         </div>
 
-        <div className="mt-6 flex items-start justify-between">
+        <div className="mt-6">
           <div className="flex flex-col">
             <span className="text-gray-400 text-xs font-bold uppercase tracking-wider">Series</span>
             <div className="flex items-baseline gap-1">
@@ -357,11 +435,11 @@ const App: React.FC = () => {
               <span className="text-3xl font-black text-cyan-400 neon-text-cyan">{state.last4}</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowAdminModal(true)} className="bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center gap-2 text-sm font-semibold">
+          <div className="grid grid-cols-2 gap-2 mt-3 w-full">
+            <button onClick={() => setShowAdminModal(true)} className="w-full bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center justify-center gap-2 text-sm font-semibold">
               Admin
             </button>
-            <button className="bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center gap-2 text-sm font-semibold">
+            <button className="w-full bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center justify-center gap-2 text-sm font-semibold">
               <LayoutTemplate size={18} /> Template
             </button>
           </div>
@@ -376,6 +454,9 @@ const App: React.FC = () => {
             <span className="text-gray-500 text-[10px] uppercase font-bold">Attempts</span>
             <span className="text-xl font-bold">{state.attempts}</span>
           </div>
+        </div>
+        <div className="mt-3 text-[11px] text-gray-400">
+          Queue: {queue.length} {queue.length > 0 ? `· ${queue[0]} → ${queue[queue.length - 1]}` : ''}
         </div>
       </Card>
 
@@ -419,13 +500,19 @@ const App: React.FC = () => {
             <span className="text-gray-500 text-[10px] uppercase font-bold block mb-2">Last 4 (Editable) and Attempts</span>
             <div className="flex gap-2">
               <Input 
-                value={state.last4} 
-                onChange={(e) => setState(p => ({ ...p, last4: e.target.value }))}
+                value={state.last4}
+                onChange={(e) => {
+                  const v = e.target.value.replace(/\D/g, '').slice(0, 4);
+                  setState(p => ({ ...p, last4: v.padStart(4, '0') }));
+                }}
                 className="flex-grow"
               />
               <Input 
-                value={state.attempts} 
-                onChange={(e) => setState(p => ({ ...p, attempts: parseInt(e.target.value) || 0 }))}
+                value={state.attempts}
+                onChange={(e) => {
+                  const n = Math.max(0, Math.min(10000, parseInt(e.target.value.replace(/\D/g, '') || '0')));
+                  setState(p => ({ ...p, attempts: n }));
+                }}
                 className="w-20"
               />
             </div>
@@ -492,7 +579,26 @@ const App: React.FC = () => {
       {/* Sticky Bottom Action */}
       <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-gradient-to-t from-[#0f111a] via-[#0f111a] to-transparent pointer-events-none">
         <div className="pointer-events-auto flex flex-col items-center">
-          <button className="w-full gradient-button h-16 rounded-2xl text-white font-black text-xl flex items-center justify-center gap-3 shadow-[0_10px_40px_rgba(168,85,247,0.3)] active:scale-95 transition-transform uppercase tracking-wider">
+          <button
+            onClick={() => {
+              try {
+                const numbers = queue;
+                if (!numbers.length) { setErrorModal('Queue is empty. Adjust Last 4 or Attempts.'); return; }
+                const sa: any = (window as any).AndroidApp;
+                const intervalMs = Math.max(1000, (state.interval || 5) * 1000);
+                if (sa && typeof sa.startDial === 'function') {
+                  sa.startDial(JSON.stringify(numbers), intervalMs);
+                  showToast(`Starting auto-dial of ${numbers.length} numbers`);
+                } else {
+                  // Browser fallback: attempt to open the first tel link
+                  window.location.href = `tel:${numbers[0]}`;
+                }
+              } catch (e) {
+                setErrorModal(`Failed to start dialing: ${String(e)}`);
+              }
+            }}
+            className="w-full gradient-button h-16 rounded-2xl text-white font-black text-xl flex items-center justify-center gap-3 shadow-[0_10px_40px_rgba(168,85,247,0.3)] active:scale-95 transition-transform uppercase tracking-wider"
+          >
             <PhoneCall size={28} /> Call Now
           </button>
           <p className="mt-3 text-[10px] text-gray-500 font-medium text-center leading-tight">
@@ -668,6 +774,16 @@ const App: React.FC = () => {
         <div className="fixed left-1/2 transform -translate-x-1/2 bottom-28 bg-black/70 text-white px-4 py-2 rounded-md z-50">
           {toast}
         </div>
+      )}
+
+      {/* Error Modal */}
+      {errorModal && (
+        <Modal title="Error" onClose={() => setErrorModal(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-rose-300 whitespace-pre-wrap">{errorModal}</p>
+            <button onClick={() => setErrorModal(null)} className="w-full bg-rose-600 py-2 rounded-lg font-bold">Close</button>
+          </div>
+        </Modal>
       )}
 
     </div>
