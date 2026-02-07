@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Save, 
   LayoutTemplate, 
@@ -67,15 +67,7 @@ const App: React.FC = () => {
     adminPhone: '09924387967',
     isSystemActive: true,
     isDialerActive: true,
-    callLogs: [
-      { id: '1', number: '09121230001', duration: '01:24', status: 'ANSWERED', timestamp: new Date(new Date().setHours(10, 30)) },
-      { id: '2', number: '09121230002', duration: '00:00', status: 'UNANSWERED', timestamp: new Date(new Date().setHours(9, 15)) },
-      { id: '3', number: '09121230003', duration: '00:45', status: 'ANSWERED', timestamp: new Date(new Date().setHours(11, 45)) },
-      { id: '4', number: '09121230004', duration: '00:00', status: 'BUSY', timestamp: new Date(new Date().setHours(13, 10)) },
-      { id: '5', number: '09121230005', duration: '00:00', status: 'UNANSWERED', timestamp: new Date(new Date().setHours(15, 20)) },
-      { id: '6', number: '09121230006', duration: '02:10', status: 'ANSWERED', timestamp: new Date(new Date().setHours(16, 45)) },
-      { id: '7', number: '09121230007', duration: '00:00', status: 'UNANSWERED', timestamp: new Date(new Date().setHours(17, 15)) },
-    ]
+    callLogs: []
   });
 
   const [activeModal, setActiveModal] = useState<ModalType>(null);
@@ -83,10 +75,93 @@ const App: React.FC = () => {
   const handleSave = () => console.log('Saving config...', state);
   const closeModal = () => setActiveModal(null);
 
-  const handleExport = (rangeName: string) => {
-    setExporting(rangeName);
-    setTimeout(() => setExporting(null), 2000);
-    console.log(`Exporting report for: ${rangeName}`);
+  // Admin + reports state
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [showReportModal, setShowReportModal] = useState<null | { range: string }>(null);
+  const [editingLog, setEditingLog] = useState<null | CallLog>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = (msg: string, ms = 2000) => {
+    setToast(msg);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), ms);
+  };
+
+  useEffect(() => {
+    // load saved admin settings from localStorage
+    const saved = localStorage.getItem('accm_admin');
+    if (saved) {
+      try { const parsed = JSON.parse(saved); setState(prev => ({ ...prev, ...parsed })); } catch(e){}
+    }
+
+    const onlineHandler = () => showToast("You're Online!", 1800);
+    const offlineHandler = () => showToast('No internet connection. Exporting will not work.', 4000);
+    window.addEventListener('online', onlineHandler);
+    window.addEventListener('offline', offlineHandler);
+    return () => {
+      window.removeEventListener('online', onlineHandler);
+      window.removeEventListener('offline', offlineHandler);
+    };
+  }, []);
+
+  const saveAdmin = (payload: Partial<AppState>) => {
+    localStorage.setItem('accm_admin', JSON.stringify(payload));
+    setState(p => ({ ...p, ...payload }));
+    showToast('Settings saved');
+  };
+
+  const fetchDnc = async () => {
+    // try cache first
+    const cached = localStorage.getItem('accm_dnc');
+    if (cached) return new Set(JSON.parse(cached) as string[]);
+    try {
+      const res = await fetch('https://nocollateralloan.org/dnc.txt', { cache: 'force-cache' });
+      const txt = await res.text();
+      const matches = Array.from(txt.matchAll(/\d{7,}/g)).map(m => m[0]);
+      localStorage.setItem('accm_dnc', JSON.stringify(matches));
+      return new Set(matches);
+    } catch (e) {
+      showToast('Failed to load DNC (offline?)');
+      return new Set<string>();
+    }
+  };
+
+  const handleExportRange = async (rangeName: string) => {
+    // open modal for reporting inputs
+    setShowReportModal({ range: rangeName });
+  };
+
+  const uploadCsvToServer = async (filename: string, csv: string) => {
+    if (!navigator.onLine) { showToast('Offline — cannot upload now'); return false; }
+    try {
+      const target = `https://subd.nocollateralloan.org/reports/${encodeURIComponent(filename)}`;
+      const res = await fetch(target, { method: 'PUT', headers: { 'Content-Type': 'text/csv' }, body: csv });
+      if (!res.ok) throw new Error('Upload failed');
+      showToast('Uploaded report');
+      return true;
+    } catch (e) {
+      console.error(e);
+      showToast('Upload failed — check server/CORS');
+      return false;
+    }
+  };
+
+  const exportAll = async () => {
+    // build CSV from callLogs (skip for now if empty)
+    const rows = [['Date','Time Log','Phone Number','Agent Name','Calls','Responses','Texts (Outbound)','Texts (Inbound)','Qualified','Status','Series']];
+    state.callLogs.forEach(l => {
+      rows.push([
+        new Date().toLocaleDateString(),
+        l.timestamp.toLocaleTimeString(),
+        l.number,
+        state.agentName,
+        '', '', '', '', '', l.status, ''
+      ]);
+    });
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const filename = `${state.agentName || 'Agent'} - ${new Date().toLocaleDateString()}.csv`;
+    await uploadCsvToServer(filename, csv);
   };
 
   // Stats calculation
@@ -173,7 +248,7 @@ const App: React.FC = () => {
             ].map((range, idx) => (
               <Card 
                 key={idx} 
-                onClick={() => handleExport(range.label)}
+                onClick={() => handleExportRange(range.label)}
                 className="flex items-center justify-between border-[#2d3142] py-3 group"
               >
                 <div className="flex flex-col">
@@ -193,7 +268,7 @@ const App: React.FC = () => {
         {/* Export All Button */}
         <div className="mb-8">
           <button 
-            onClick={() => handleExport('9am to 6pm')}
+            onClick={() => exportAll()}
             className="w-full h-14 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-2xl flex items-center justify-center gap-3 text-white font-black uppercase tracking-widest shadow-lg shadow-purple-600/20 active:scale-95 transition-transform"
           >
             <Share2 size={20} /> Export All (9am - 6pm)
@@ -238,6 +313,9 @@ const App: React.FC = () => {
               }`}>
                 {log.status === 'ANSWERED' ? 'ANS' : log.status === 'UNANSWERED' ? 'UNANS' : 'BUSY'}
               </div>
+              <div className="ml-2 flex items-center gap-2">
+                <button onClick={() => setEditingLog(log)} className="px-2 py-1 bg-[#2d3142] rounded-lg text-xs">Edit</button>
+              </div>
             </div>
           ))}
         </div>
@@ -275,13 +353,18 @@ const App: React.FC = () => {
           <div className="flex flex-col">
             <span className="text-gray-400 text-xs font-bold uppercase tracking-wider">Series</span>
             <div className="flex items-baseline gap-1">
-              <span className="text-3xl font-black text-purple-500 neon-text-purple">0992</span>
-              <span className="text-3xl font-black text-cyan-400 neon-text-cyan">438</span>
+              <span className="text-3xl font-black text-purple-500 neon-text-purple">{state.series ?? state.baseNumber}</span>
+              <span className="text-3xl font-black text-cyan-400 neon-text-cyan">{state.last4}</span>
             </div>
           </div>
-          <button className="bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center gap-2 text-sm font-semibold">
-            <LayoutTemplate size={18} /> Template
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowAdminModal(true)} className="bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center gap-2 text-sm font-semibold">
+              Admin
+            </button>
+            <button className="bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center gap-2 text-sm font-semibold">
+              <LayoutTemplate size={18} /> Template
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3 mt-6">
@@ -482,6 +565,158 @@ const App: React.FC = () => {
         </Modal>
       )}
 
+      {/* Admin Modal (local settings) */}
+      {showAdminModal && (
+        <Modal title="Admin Settings" onClose={() => setShowAdminModal(false)}>
+          <div className="space-y-4">
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Agent Name</span>
+              <Input value={state.agentName} onChange={(e) => setState(p => ({ ...p, agentName: e.target.value }))} />
+            </div>
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Google Sheet ID</span>
+              <Input value={state.googleSheetId ?? ''} onChange={(e) => setState(p => ({ ...p, googleSheetId: e.target.value }))} />
+            </div>
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Series (for reports)</span>
+              <Input value={state.series ?? ''} onChange={(e) => setState(p => ({ ...p, series: e.target.value }))} />
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setShowAdminModal(false)} className="flex-1 bg-[#2d3142] py-2 rounded-lg font-bold">Cancel</button>
+              <button onClick={() => { saveAdmin({ agentName: state.agentName, googleSheetId: state.googleSheetId, series: state.series }); setShowAdminModal(false); }} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Save</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Report Form Modal for hourly ranges */}
+      {showReportModal && (
+        <Modal title={`Report — ${showReportModal.range}`} onClose={() => setShowReportModal(null)}>
+          <ReportForm
+            initialSeries={state.series ?? `${state.baseNumber}`}
+            agentName={state.agentName}
+            onSubmit={async (form) => {
+              // create CSV row and upload
+              const header = ['Date','Time Log','Phone Number','Agent Name','Calls','Responses','Texts (Outbound)','Texts (Inbound)','Qualified','Status','Series'];
+              const row = [
+                new Date().toLocaleDateString(),
+                new Date().toLocaleTimeString(),
+                form.phoneNumber,
+                state.agentName,
+                '', '',
+                form.textsOutbound ? 'Yes' : 'No',
+                '',
+                form.qualified ? 'Yes' : 'No',
+                form.status,
+                form.series
+              ];
+              const csv = [header, row].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+              const filename = `${state.agentName || 'Agent'} - ${new Date().toLocaleDateString()}.csv`;
+              await uploadCsvToServer(filename, csv);
+              setShowReportModal(null);
+            }}
+            onCancel={() => setShowReportModal(null)}
+          />
+        </Modal>
+      )}
+
+      {/* Edit existing log modal */}
+      {editingLog && (
+        <Modal title={`Edit — ${editingLog.number}`} onClose={() => setEditingLog(null)}>
+          <ReportForm
+            initialSeries={editingLog.series ?? state.series ?? state.baseNumber}
+            agentName={state.agentName}
+            onSubmit={async (form) => {
+              // update local log
+              setState(prev => ({ ...prev, callLogs: prev.callLogs.map(l => l.id === editingLog.id ? ({ ...l, reportStatus: form.status, qualified: form.qualified, series: form.series }) : l) }));
+
+              // create CSV row and attempt upload
+              const header = ['Date','Time Log','Phone Number','Agent Name','Calls','Responses','Texts (Outbound)','Texts (Inbound)','Qualified','Status','Series'];
+              const row = [
+                new Date().toLocaleDateString(),
+                new Date().toLocaleTimeString(),
+                editingLog.number,
+                state.agentName,
+                '', '',
+                form.textsOutbound ? 'Yes' : 'No',
+                '',
+                form.qualified ? 'Yes' : 'No',
+                form.status,
+                form.series
+              ];
+              const csv = [header, row].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+              const filename = `${state.agentName || 'Agent'} - ${new Date().toLocaleDateString()}.csv`;
+              await uploadCsvToServer(filename, csv);
+
+              // If running inside Android WebView with bridge, try to call native updater too
+              try {
+                const sa = (window as any).AndroidApp;
+                if (sa && typeof sa.updateQualifiedAndStatus === 'function') {
+                  sa.updateQualifiedAndStatus(state.googleSheetId || '', 'Sheet1', editingLog.number, form.qualified ? 'true' : 'false', form.status);
+                }
+              } catch (e) { console.warn('Android bridge call failed', e); }
+
+              setEditingLog(null);
+            }}
+            onCancel={() => setEditingLog(null)}
+          />
+        </Modal>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed left-1/2 transform -translate-x-1/2 bottom-28 bg-black/70 text-white px-4 py-2 rounded-md z-50">
+          {toast}
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+// Report form used by the report modal
+const ReportForm: React.FC<{
+  initialSeries: string;
+  agentName: string;
+  onSubmit: (data: { phoneNumber: string; qualified: boolean; textsOutbound: boolean; status: string; series: string }) => void;
+  onCancel: () => void;
+}> = ({ initialSeries, agentName, onSubmit, onCancel }) => {
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [qualified, setQualified] = useState(false);
+  const [textsOutbound, setTextsOutbound] = useState(false);
+  const [status, setStatus] = useState('Not Interested');
+  const [series, setSeries] = useState(initialSeries);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Phone Number</span>
+        <Input value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="09xxxxxxxxx" />
+      </div>
+      <div>
+        <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Series</span>
+        <Input value={series} onChange={(e) => setSeries(e.target.value)} />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-gray-300 text-[10px] font-bold uppercase">Qualified</span>
+        <Toggle enabled={qualified} onChange={(v) => setQualified(v)} />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-gray-300 text-[10px] font-bold uppercase">Texts (Outbound)</span>
+        <Toggle enabled={textsOutbound} onChange={(v) => setTextsOutbound(v)} />
+      </div>
+      <div>
+        <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Status</span>
+        <div className="grid grid-cols-2 gap-2">
+          {['Not Interested','Undecided','Documents Sent','Callback'].map(s => (
+            <button key={s} onClick={() => setStatus(s)} className={`py-3 rounded-lg font-bold ${status===s? 'bg-purple-600 text-white':'bg-[#2d3142] text-gray-300'}`}>{s}</button>
+          ))}
+        </div>
+      </div>
+      <div className="flex gap-2 pt-2">
+        <button onClick={onCancel} className="flex-1 bg-[#2d3142] py-2 rounded-lg font-bold">Cancel</button>
+        <button onClick={() => onSubmit({ phoneNumber, qualified, textsOutbound, status, series })} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Submit</button>
+      </div>
     </div>
   );
 };

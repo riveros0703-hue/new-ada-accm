@@ -7,6 +7,9 @@ export interface CallLog {
   duration: string; // e.g. "02:15"
   status: CallStatus;
   timestamp: Date;
+  qualified?: boolean;
+  reportStatus?: string;
+  series?: string;
 }
 
 export interface AppState {
@@ -23,6 +26,9 @@ export interface AppState {
   isSystemActive: boolean;
   isDialerActive: boolean;
   callLogs: CallLog[];
+  // optional admin settings
+  series?: string;
+  googleSheetId?: string;
 }
 
 export type ModalType = 'EDIT_BASE' | 'TAG_CALL' | 'SEND_SMS' | null;
