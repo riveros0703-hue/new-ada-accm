@@ -1,0 +1,503 @@
+
+import React, { useState, useMemo } from 'react';
+import { 
+  Save, 
+  LayoutTemplate, 
+  FileText, 
+  Edit3, 
+  Tag, 
+  Send, 
+  PhoneCall, 
+  Circle,
+  Clock,
+  ChevronLeft,
+  Phone,
+  BarChart3,
+  Download,
+  Share2
+} from 'lucide-react';
+import { AppState, ModalType, ViewType, CallLog, CallStatus } from './types';
+
+// Helper Components
+const Card: React.FC<{ children: React.ReactNode; className?: string; onClick?: () => void }> = ({ children, className = "", onClick }) => (
+  <div 
+    onClick={onClick}
+    className={`bg-[#1c1f2e] border border-[#2d3142] rounded-2xl p-4 shadow-xl transition-all ${onClick ? 'cursor-pointer active:scale-95 hover:border-purple-500/50' : ''} ${className}`}
+  >
+    {children}
+  </div>
+);
+
+const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = (props) => (
+  <input
+    {...props}
+    className={`bg-[#2d3142] border border-[#3e445a] text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500 w-full transition-all ${props.className}`}
+  />
+);
+
+const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void }> = ({ enabled, onChange }) => (
+  <button
+    onClick={() => onChange(!enabled)}
+    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+      enabled ? 'bg-emerald-500' : 'bg-gray-600'
+    }`}
+  >
+    <span
+      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+        enabled ? 'translate-x-6' : 'translate-x-1'
+      }`}
+    />
+  </button>
+);
+
+const App: React.FC = () => {
+  const [currentView, setCurrentView] = useState<ViewType>('dialer');
+  const [exporting, setExporting] = useState<string | null>(null);
+  
+  const [state, setState] = useState<AppState>({
+    agentName: '',
+    branchName: '',
+    baseNumber: '0912123',
+    last4: '0000',
+    attempts: 5,
+    isShuffle: false,
+    interval: 5,
+    autoSmsEnabled: true,
+    autoSmsAnsweredEnabled: false,
+    adminPhone: '09924387967',
+    isSystemActive: true,
+    isDialerActive: true,
+    callLogs: [
+      { id: '1', number: '09121230001', duration: '01:24', status: 'ANSWERED', timestamp: new Date(new Date().setHours(10, 30)) },
+      { id: '2', number: '09121230002', duration: '00:00', status: 'UNANSWERED', timestamp: new Date(new Date().setHours(9, 15)) },
+      { id: '3', number: '09121230003', duration: '00:45', status: 'ANSWERED', timestamp: new Date(new Date().setHours(11, 45)) },
+      { id: '4', number: '09121230004', duration: '00:00', status: 'BUSY', timestamp: new Date(new Date().setHours(13, 10)) },
+      { id: '5', number: '09121230005', duration: '00:00', status: 'UNANSWERED', timestamp: new Date(new Date().setHours(15, 20)) },
+      { id: '6', number: '09121230006', duration: '02:10', status: 'ANSWERED', timestamp: new Date(new Date().setHours(16, 45)) },
+      { id: '7', number: '09121230007', duration: '00:00', status: 'UNANSWERED', timestamp: new Date(new Date().setHours(17, 15)) },
+    ]
+  });
+
+  const [activeModal, setActiveModal] = useState<ModalType>(null);
+
+  const handleSave = () => console.log('Saving config...', state);
+  const closeModal = () => setActiveModal(null);
+
+  const handleExport = (rangeName: string) => {
+    setExporting(rangeName);
+    setTimeout(() => setExporting(null), 2000);
+    console.log(`Exporting report for: ${rangeName}`);
+  };
+
+  // Stats calculation
+  const stats = useMemo(() => {
+    const today = new Date().toDateString();
+    const todayLogs = state.callLogs.filter(log => log.timestamp.toDateString() === today);
+    
+    const getRangeStats = (startH: number, endH: number) => {
+      const logs = todayLogs.filter(log => {
+        const h = log.timestamp.getHours();
+        return h >= startH && h < endH;
+      });
+      return {
+        total: logs.length,
+        ans: logs.filter(l => l.status === 'ANSWERED').length,
+        unans: logs.filter(l => l.status === 'UNANSWERED').length
+      };
+    };
+
+    return {
+      global: {
+        answered: todayLogs.filter(l => l.status === 'ANSWERED').length,
+        unanswered: todayLogs.filter(l => l.status === 'UNANSWERED').length,
+        busy: todayLogs.filter(l => l.status === 'BUSY').length,
+        total: todayLogs.length
+      },
+      ranges: {
+        r1: getRangeStats(9, 11), // 9am - 11am
+        r2: getRangeStats(11, 14), // 11am - 2pm
+        r3: getRangeStats(14, 16), // 2pm - 4pm
+        r4: getRangeStats(16, 18), // 4pm - 6pm
+      }
+    };
+  }, [state.callLogs]);
+
+  if (currentView === 'history') {
+    return (
+      <div className="min-h-screen pb-20 max-w-md mx-auto relative px-4 pt-6 bg-[#0f111a] animate-in fade-in slide-in-from-right-4 duration-300 no-scrollbar overflow-y-auto">
+        <header className="flex items-center gap-4 mb-6">
+          <button 
+            onClick={() => setCurrentView('dialer')}
+            className="p-2 bg-[#1c1f2e] border border-[#2d3142] rounded-xl text-gray-400 hover:text-white transition-colors"
+          >
+            <ChevronLeft size={24} />
+          </button>
+          <div className="flex-grow">
+            <h1 className="text-xl font-black text-white tracking-tight">Call History</h1>
+            <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">{new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>
+          </div>
+          {exporting && (
+            <div className="bg-purple-600 text-white text-[10px] font-black px-2 py-1 rounded animate-pulse">
+              EXPORTING...
+            </div>
+          )}
+        </header>
+
+        {/* Top Summary Cards */}
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          <Card className="flex flex-col items-center justify-center py-6 border-emerald-500/20 bg-emerald-500/5">
+            <div className="p-2 bg-emerald-500/20 rounded-lg mb-2 text-emerald-500">
+              <Phone size={20} />
+            </div>
+            <span className="text-2xl font-black text-emerald-500">{stats.global.answered}</span>
+            <span className="text-[10px] font-bold text-emerald-500/70 uppercase">Answered</span>
+          </Card>
+          <Card className="flex flex-col items-center justify-center py-6 border-rose-500/20 bg-rose-500/5">
+            <div className="p-2 bg-rose-500/20 rounded-lg mb-2 text-rose-500">
+              <Clock size={20} />
+            </div>
+            <span className="text-2xl font-black text-rose-500">{stats.global.unanswered}</span>
+            <span className="text-[10px] font-bold text-rose-500/70 uppercase">Unanswered</span>
+          </Card>
+        </div>
+
+        {/* Time Frame Export Cards */}
+        <div className="mb-6">
+          <span className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3 block px-1">Hourly Frames (Click to Export)</span>
+          <div className="grid grid-cols-1 gap-2">
+            {[
+              { label: '9am - 11am', stats: stats.ranges.r1 },
+              { label: '11am - 2pm', stats: stats.ranges.r2 },
+              { label: '2pm - 4pm', stats: stats.ranges.r3 },
+              { label: '4pm - 6pm', stats: stats.ranges.r4 },
+            ].map((range, idx) => (
+              <Card 
+                key={idx} 
+                onClick={() => handleExport(range.label)}
+                className="flex items-center justify-between border-[#2d3142] py-3 group"
+              >
+                <div className="flex flex-col">
+                  <span className="text-sm font-black text-purple-400 group-hover:neon-text-purple transition-all">{range.label}</span>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] font-bold text-gray-400 uppercase">Total: <span className="text-white">{range.stats.total}</span></span>
+                    <span className="text-[10px] font-bold text-gray-400 uppercase">Ans: <span className="text-emerald-500">{range.stats.ans}</span></span>
+                    <span className="text-[10px] font-bold text-gray-400 uppercase">UnAns: <span className="text-rose-500">{range.stats.unans}</span></span>
+                  </div>
+                </div>
+                <Download size={18} className="text-gray-600 group-hover:text-purple-400" />
+              </Card>
+            ))}
+          </div>
+        </div>
+
+        {/* Export All Button */}
+        <div className="mb-8">
+          <button 
+            onClick={() => handleExport('9am to 6pm')}
+            className="w-full h-14 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-2xl flex items-center justify-center gap-3 text-white font-black uppercase tracking-widest shadow-lg shadow-purple-600/20 active:scale-95 transition-transform"
+          >
+            <Share2 size={20} /> Export All (9am - 6pm)
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between mb-4 px-1">
+          <span className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+            <BarChart3 size={14} /> Today's Activity
+          </span>
+          <span className="text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-2 py-0.5 rounded-full border border-cyan-400/20">All Day: {stats.global.total}</span>
+        </div>
+
+        {/* Logs List */}
+        <div className="space-y-3">
+          {state.callLogs.slice().reverse().map((log) => (
+            <div 
+              key={log.id} 
+              className="bg-[#1c1f2e] border border-[#2d3142] p-4 rounded-2xl flex items-center justify-between group active:scale-[0.98] transition-all"
+            >
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-xl border ${
+                  log.status === 'ANSWERED' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' :
+                  log.status === 'UNANSWERED' ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' :
+                  'bg-amber-500/10 border-amber-500/20 text-amber-500'
+                }`}>
+                  <Phone size={18} />
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-white mb-0.5">{log.number}</div>
+                  <div className="text-[10px] text-gray-500 font-medium flex items-center gap-2">
+                    <span>{log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    <span className="w-1 h-1 bg-gray-700 rounded-full" />
+                    <span>Duration: {log.duration}</span>
+                  </div>
+                </div>
+              </div>
+              <div className={`text-[10px] font-black px-2 py-1 rounded-lg border ${
+                log.status === 'ANSWERED' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' :
+                log.status === 'UNANSWERED' ? 'bg-rose-500/10 border-rose-500/30 text-rose-500' :
+                'bg-amber-500/10 border-amber-500/30 text-amber-500'
+              }`}>
+                {log.status === 'ANSWERED' ? 'ANS' : log.status === 'UNANSWERED' ? 'UNANS' : 'BUSY'}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pb-32 max-w-md mx-auto relative px-4 pt-4 no-scrollbar overflow-y-auto bg-[#0f111a] animate-in fade-in duration-300">
+      
+      {/* Header Section */}
+      <Card className="mb-4">
+        <div className="flex flex-col gap-3">
+          <Input 
+            placeholder="Agent Name" 
+            value={state.agentName} 
+            onChange={(e) => setState(prev => ({ ...prev, agentName: e.target.value }))}
+            className="text-center"
+          />
+          <Input 
+            placeholder="Branch Name" 
+            value={state.branchName} 
+            onChange={(e) => setState(prev => ({ ...prev, branchName: e.target.value }))}
+            className="text-center"
+          />
+          <button 
+            onClick={handleSave}
+            className="w-full bg-[#3482f6] hover:bg-blue-600 text-white font-semibold py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            <Save size={18} /> Save
+          </button>
+        </div>
+
+        <div className="mt-6 flex items-start justify-between">
+          <div className="flex flex-col">
+            <span className="text-gray-400 text-xs font-bold uppercase tracking-wider">Series</span>
+            <div className="flex items-baseline gap-1">
+              <span className="text-3xl font-black text-purple-500 neon-text-purple">0992</span>
+              <span className="text-3xl font-black text-cyan-400 neon-text-cyan">438</span>
+            </div>
+          </div>
+          <button className="bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center gap-2 text-sm font-semibold">
+            <LayoutTemplate size={18} /> Template
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mt-6">
+          <div className="bg-[#12141c] p-3 rounded-xl border border-[#2d3142] flex flex-col items-center">
+            <span className="text-gray-500 text-[10px] uppercase font-bold">Last 4</span>
+            <span className="text-xl font-bold">{state.last4}</span>
+          </div>
+          <div className="bg-[#12141c] p-3 rounded-xl border border-[#2d3142] flex flex-col items-center">
+            <span className="text-gray-500 text-[10px] uppercase font-bold">Attempts</span>
+            <span className="text-xl font-bold">{state.attempts}</span>
+          </div>
+        </div>
+      </Card>
+
+      {/* Configuration Section */}
+      <Card className="mb-4">
+        <div className="mb-4">
+          <span className="text-gray-500 text-[10px] uppercase font-bold block mb-1">Base Number (7 Digits)</span>
+          <span className="text-2xl font-bold tracking-tight">{state.baseNumber}</span>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <button 
+            onClick={() => setActiveModal('EDIT_BASE')}
+            className="bg-purple-600/20 text-purple-400 border border-purple-500/30 py-2 rounded-lg text-xs font-bold flex flex-col items-center gap-1"
+          >
+            <Edit3 size={16} /> Edit Base
+          </button>
+          <button 
+            onClick={() => setActiveModal('TAG_CALL')}
+            className="bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 py-2 rounded-lg text-xs font-bold flex flex-col items-center gap-1"
+          >
+            <Tag size={16} /> Tag Last
+          </button>
+          <button 
+            onClick={() => setActiveModal('SEND_SMS')}
+            className="bg-cyan-600/20 text-cyan-400 border border-cyan-500/30 py-2 rounded-lg text-xs font-bold flex flex-col items-center gap-1"
+          >
+            <Send size={16} /> Send SMS
+          </button>
+        </div>
+
+        <button 
+          onClick={() => setCurrentView('history')}
+          className="w-full bg-[#2d3142] hover:bg-[#3e445a] py-2 rounded-lg text-xs font-bold text-gray-300 border border-[#3e445a] mb-6 flex items-center justify-center gap-2 transition-colors"
+        >
+          <FileText size={16} /> Reports / History
+        </button>
+
+        <div className="space-y-4">
+          <div>
+            <span className="text-gray-500 text-[10px] uppercase font-bold block mb-2">Last 4 (Editable) and Attempts</span>
+            <div className="flex gap-2">
+              <Input 
+                value={state.last4} 
+                onChange={(e) => setState(p => ({ ...p, last4: e.target.value }))}
+                className="flex-grow"
+              />
+              <Input 
+                value={state.attempts} 
+                onChange={(e) => setState(p => ({ ...p, attempts: parseInt(e.target.value) || 0 }))}
+                className="w-20"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300 text-xs font-bold uppercase">Turn on Shuffle</span>
+            <Toggle enabled={state.isShuffle} onChange={(v) => setState(p => ({ ...p, isShuffle: v }))} />
+          </div>
+
+          <div>
+            <span className="text-gray-500 text-[10px] uppercase font-bold block mb-2">Interval (Seconds)</span>
+            <div className="flex gap-2">
+              <Input 
+                value={state.interval} 
+                onChange={(e) => setState(p => ({ ...p, interval: parseInt(e.target.value) || 0 }))}
+              />
+              <button className="bg-purple-600 hover:bg-purple-700 px-4 rounded-lg font-bold text-xs">Set</button>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-[#2d3142] space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-gray-300 text-[10px] font-bold uppercase">Auto SMS (Unanswered)</span>
+              <Toggle enabled={state.autoSmsEnabled} onChange={(v) => setState(p => ({ ...p, autoSmsEnabled: v }))} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-300 text-[10px] font-bold uppercase">Auto SMS (Answered)</span>
+              <Toggle enabled={state.autoSmsAnsweredEnabled} onChange={(v) => setState(p => ({ ...p, autoSmsAnsweredEnabled: v }))} />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-2">
+            <Input 
+              value={state.adminPhone} 
+              onChange={(e) => setState(p => ({ ...p, adminPhone: e.target.value }))}
+              className="flex-grow text-xs"
+            />
+            <span className="text-[10px] font-bold text-gray-500 uppercase">Admin</span>
+            <button className="bg-purple-600/80 hover:bg-purple-600 px-4 py-2 rounded-lg font-bold text-xs">Save</button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Dialer Control Tile */}
+      <div className="flex flex-col items-center py-6 gap-6">
+        <div className="w-32 h-32 bg-[#1c1f2e] border-2 border-[#2d3142] rounded-3xl flex items-center justify-center shadow-[0_0_30px_rgba(0,0,0,0.5)]">
+           <span className="text-4xl font-black text-cyan-400 tracking-widest neon-text-cyan">ACCM</span>
+        </div>
+
+        <div className="flex items-center gap-2 bg-[#1c1f2e] px-4 py-1.5 rounded-full border border-[#2d3142]">
+          <Circle size={10} className={`animate-pulse ${state.isSystemActive ? 'fill-emerald-500 text-emerald-500' : 'fill-rose-500 text-rose-500'}`} />
+          <span className={`text-xs font-bold uppercase tracking-widest ${state.isSystemActive ? 'text-emerald-500' : 'text-rose-500'}`}>
+            {state.isSystemActive ? 'Active' : 'Offline'}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <span className="text-gray-400 text-xs font-bold uppercase tracking-wider">System</span>
+          <Toggle enabled={state.isSystemActive} onChange={(v) => setState(p => ({ ...p, isSystemActive: v }))} />
+        </div>
+      </div>
+
+      {/* Sticky Bottom Action */}
+      <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-gradient-to-t from-[#0f111a] via-[#0f111a] to-transparent pointer-events-none">
+        <div className="pointer-events-auto flex flex-col items-center">
+          <button className="w-full gradient-button h-16 rounded-2xl text-white font-black text-xl flex items-center justify-center gap-3 shadow-[0_10px_40px_rgba(168,85,247,0.3)] active:scale-95 transition-transform uppercase tracking-wider">
+            <PhoneCall size={28} /> Call Now
+          </button>
+          <p className="mt-3 text-[10px] text-gray-500 font-medium text-center leading-tight">
+            Auto SMS configured · {stats.global.answered} answered today
+          </p>
+        </div>
+      </div>
+
+      {/* Modals */}
+      {activeModal === 'EDIT_BASE' && (
+        <Modal title="Edit Base Number" onClose={closeModal}>
+          <div className="space-y-4">
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Base Number (7 Digits)</span>
+              <Input 
+                value={state.baseNumber} 
+                onChange={(e) => setState(p => ({ ...p, baseNumber: e.target.value }))}
+                maxLength={7}
+              />
+            </div>
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Series Preview</span>
+              <span className="text-2xl font-black text-purple-500">{state.baseNumber}</span>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={closeModal} className="flex-1 bg-[#2d3142] py-2 rounded-lg font-bold">Cancel</button>
+              <button onClick={closeModal} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Save</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {activeModal === 'TAG_CALL' && (
+        <Modal title="Tag Call" onClose={closeModal}>
+          <div className="space-y-4">
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Number</span>
+              <Input value={state.baseNumber + state.last4} readOnly className="bg-[#12141c] border-transparent" />
+            </div>
+            <span className="text-gray-500 text-[10px] font-bold uppercase block">Choose Status</span>
+            <div className="grid grid-cols-2 gap-2">
+              <button className="bg-amber-500 text-black font-black py-4 rounded-xl text-sm active:scale-95 transition-transform">BUSY</button>
+              <button className="bg-emerald-500 text-black font-black py-4 rounded-xl text-sm active:scale-95 transition-transform">ANSWERED</button>
+            </div>
+            <button className="w-full bg-rose-500 text-black font-black py-4 rounded-xl text-sm active:scale-95 transition-transform">UNANSWERED</button>
+            <button onClick={closeModal} className="w-full bg-[#2d3142] py-3 rounded-lg font-bold mt-4">Close</button>
+          </div>
+        </Modal>
+      )}
+
+      {activeModal === 'SEND_SMS' && (
+        <Modal title="Send SMS" onClose={closeModal}>
+          <div className="space-y-4">
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">To</span>
+              <Input value={state.baseNumber + state.last4} readOnly />
+            </div>
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Message Preview</span>
+              <textarea 
+                className="w-full bg-[#2d3142] border border-[#3e445a] text-white rounded-lg px-3 py-2 h-24 focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                defaultValue={`Thank you for your time! Your reference: ${state.last4}`}
+              />
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={closeModal} className="flex-1 bg-[#2d3142] py-2 rounded-lg font-bold">Cancel</button>
+              <button onClick={closeModal} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Send</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+    </div>
+  );
+};
+
+// Internal Modal Component
+const Modal: React.FC<{ title: string; children: React.ReactNode; onClose: () => void }> = ({ title, children, onClose }) => {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm">
+      <div className="w-full max-w-sm bg-[#1c1f2e] border border-[#2d3142] rounded-[32px] p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-black text-purple-400 neon-text-purple tracking-tight">{title}</h2>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+};
+
+export default App;
