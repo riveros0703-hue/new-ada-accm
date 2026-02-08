@@ -646,20 +646,12 @@ const App: React.FC = () => {
           <div className="mt-3">
             <button
               onClick={async () => {
-                const startInput = window.prompt('Enter start time (ISO or epoch ms). Example: 2026-02-09T09:00 or 1675933200000');
-                if (!startInput) return;
-                const endInput = window.prompt('Enter end time (ISO or epoch ms). Example: 2026-02-09T18:00 or 1675965600000');
-                if (!endInput) return;
-                const parseMs = (v: string) => {
-                  const n = Number(v);
-                  if (!isNaN(n) && String(v).length > 9) return n;
-                  const p = Date.parse(v);
-                  return isNaN(p) ? null : p;
-                };
-                const s = parseMs(startInput);
-                const e = parseMs(endInput);
-                if (!s || !e) { showToast('Invalid time input'); return; }
-                await fetchCallsOutsideRange(s, e);
+                // compute today's 9:00 and 18:00 local times
+                const now = new Date();
+                const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0, 0).getTime();
+                const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0, 0).getTime();
+                // fetch calls outside 9:00-18:00 (i.e., before 9am or after 6pm)
+                await fetchCallsOutsideRange(start, end);
               }}
               className="w-full h-10 bg-[#2d3142] rounded-lg flex items-center justify-center gap-2 text-gray-300 font-bold border border-[#3e445a]"
             >
