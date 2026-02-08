@@ -308,13 +308,58 @@ const App: React.FC = () => {
     if (cached) return new Set(JSON.parse(cached) as string[]);
     try {
       const res = await fetch('https://subd.nocollateralloan.org/dnc.txt', { cache: 'force-cache' });
+      if (!res.ok) throw new Error('Network response not ok');
       const txt = await res.text();
       const matches = Array.from(txt.matchAll(/\d{7,}/g)).map(m => m[0]);
       localStorage.setItem('accm_dnc', JSON.stringify(matches));
       localStorage.setItem('accm_dnc_count', matches.length.toString());
       return new Set(matches);
     } catch (e) {
-      showToast('Failed to load DNC (offline?)');
+      // If fetch failed (CORS/offline), try asking the Android native bridge to load the DNC
+      try {
+        const sa: any = (window as any).AndroidApp;
+        if (sa && typeof sa.requestDnc === 'function') {
+          return await new Promise<Set<string>>((resolve, reject) => {
+            const cbName = `__ACCMDncCallback_${Date.now()}`;
+            // @ts-ignore
+            (window as any)[cbName] = (arr: string[] | any) => {
+              try {
+                // Cleanup
+                // @ts-ignore
+                delete (window as any)[cbName];
+                if (!arr) return resolve(new Set<string>());
+                // If native passed a JSON string, attempt to parse
+                const list = Array.isArray(arr) ? arr : JSON.parse(arr);
+                localStorage.setItem('accm_dnc', JSON.stringify(list));
+                localStorage.setItem('accm_dnc_count', String(list.length));
+                resolve(new Set(list));
+              } catch (err) {
+                // @ts-ignore
+                delete (window as any)[cbName];
+                reject(err);
+              }
+            };
+            try {
+              sa.requestDnc(cbName);
+            } catch (err) {
+              // cleanup and reject
+              // @ts-ignore
+              delete (window as any)[cbName];
+              reject(err);
+            }
+            // timeout
+            setTimeout(() => {
+              // @ts-ignore
+              if ((window as any)[cbName]) { try { delete (window as any)[cbName]; } catch(_){} }
+              reject(new Error('Native DNC request timed out'));
+            }, 8000);
+          });
+        }
+      } catch (bridgeErr) {
+        console.warn('Native DNC bridge failed', bridgeErr);
+      }
+
+      showToast('Failed to load DNC (offline or blocked by CORS)');
       return new Set<string>();
     }
   };
@@ -1132,6 +1177,12 @@ const App: React.FC = () => {
                 setUpdateProgress(0);
                 setEditingLog(null);
                 showToast('Updated successfully');
+                try {
+                  const sa = (window as any).AndroidApp;
+                  if (sa && typeof sa.proceedToNextCall === 'function') {
+                    sa.proceedToNextCall();
+                  }
+                } catch (e) { console.warn('proceedToNextCall failed', e); }
               }, 500);
             }}
             onCancel={() => setEditingLog(null)}
