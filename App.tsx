@@ -86,11 +86,21 @@ const App: React.FC = () => {
     adminPhone: '09924387967',
     isSystemActive: true,
     isDialerActive: true,
-    callLogs: []
+    callLogs: [],
+    smsTemplateAnswered: 'Thank you for answering! We appreciate your time.',
+    smsTemplateUnanswered: 'Thank you! We tried reaching you. Please call us back.',
+    isCallActive: false
   });
   const DEFAULT_SHEET = '1UuE_F_zRG2SbHqJL5EZz9g8-9Rr75gUCEBwhLn3jtTg';
 
   const [activeModal, setActiveModal] = useState<ModalType>(null);
+
+  // New state for updating modal
+  const [showUpdatingModal, setShowUpdatingModal] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState(0); // 0-100
+  const [smsTemplateBeingEdited, setSmsTemplateBeingEdited] = useState<'answered' | 'unanswered' | null>(null);
+  const [lastCallStatus, setLastCallStatus] = useState<CallStatus | null>(null);
+  const [lastCalledNumber, setLastCalledNumber] = useState<string | null>(null);
 
   // computed dialing queue preview
   const queue = useMemo(
@@ -171,6 +181,14 @@ const App: React.FC = () => {
         }
         setCountdown(sec);
       };
+      // Callback for when a call is completed
+      ;(window as any).ACCM_onCallCompleted = (phoneNumber: string, callStatus: string) => {
+        setLastCalledNumber(phoneNumber);
+        setLastCallStatus(callStatus as CallStatus);
+        setState(p => ({ ...p, isCallActive: false }));
+        // Trigger auto-SMS after call
+        triggerAutoSms(phoneNumber, callStatus as CallStatus);
+      };
     } catch (e) {
       // ignore in browser
     }
@@ -247,6 +265,58 @@ const App: React.FC = () => {
       console.error(e);
       showToast('Upload failed — check server/CORS');
       return false;
+    }
+  };
+
+  // SMS sending helper function
+  const sendSms = async (phoneNumber: string, message: string): Promise<boolean> => {
+    if (!phoneNumber || !message) return false;
+    
+    try {
+      // Try to use native Android bridge if available
+      const sa: any = (window as any).AndroidApp;
+      if (sa && typeof sa.sendSms === 'function') {
+        sa.sendSms(phoneNumber, message);
+        return true;
+      }
+      
+      // Fallback: Try using Twilio or another SMS API
+      // This would require backend setup with API credentials
+      const response = await fetch('https://api.sms-service.com/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber, message })
+      }).catch(() => null);
+      
+      if (response?.ok) return true;
+      
+      // If all else fails, log to console
+      console.log(`[SMS] To: ${phoneNumber}, Message: ${message}`);
+      return false;
+    } catch (e) {
+      console.warn('SMS sending failed:', e);
+      return false;
+    }
+  };
+
+  // Handle auto-SMS after call completion
+  const triggerAutoSms = async (phoneNumber: string, callStatus: CallStatus) => {
+    let shouldSendSms = false;
+    let template = '';
+
+    if (callStatus === 'ANSWERED' && state.autoSmsAnsweredEnabled) {
+      shouldSendSms = true;
+      template = state.smsTemplateAnswered || 'Thank you for answering! We appreciate your time.';
+    } else if (callStatus === 'UNANSWERED' && state.autoSmsEnabled) {
+      shouldSendSms = true;
+      template = state.smsTemplateUnanswered || 'Thank you! We tried reaching you. Please call us back.';
+    }
+
+    if (shouldSendSms && template) {
+      const sent = await sendSms(phoneNumber, template);
+      if (sent) {
+        showToast(`Auto-SMS sent to ${phoneNumber}`);
+      }
     }
   };
 
@@ -390,34 +460,50 @@ const App: React.FC = () => {
           {state.callLogs.slice().reverse().map((log) => (
             <div 
               key={log.id} 
-              className="bg-[#1c1f2e] border border-[#2d3142] p-4 rounded-2xl flex items-center justify-between group active:scale-[0.98] transition-all"
+              className="bg-[#1c1f2e] border border-[#2d3142] p-4 rounded-2xl group active:scale-[0.98] transition-all"
             >
-              <div className="flex items-center gap-3">
-                <div className={`p-2.5 rounded-xl border ${
-                  log.status === 'ANSWERED' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' :
-                  log.status === 'UNANSWERED' ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' :
-                  'bg-amber-500/10 border-amber-500/20 text-amber-500'
-                }`}>
-                  <Phone size={18} />
-                </div>
-                <div>
-                  <div className="text-sm font-bold text-white mb-0.5">{log.number}</div>
-                  <div className="text-[10px] text-gray-500 font-medium flex items-center gap-2">
-                    <span>{log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    <span className="w-1 h-1 bg-gray-700 rounded-full" />
-                    <span>Duration: {log.duration}</span>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-xl border ${
+                    log.status === 'ANSWERED' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' :
+                    log.status === 'UNANSWERED' ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' :
+                    'bg-amber-500/10 border-amber-500/20 text-amber-500'
+                  }`}>
+                    <Phone size={18} />
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-white mb-0.5">{log.number}</div>
+                    <div className="text-[10px] text-gray-500 font-medium flex items-center gap-2">
+                      <span>{log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      <span className="w-1 h-1 bg-gray-700 rounded-full" />
+                      <span>Duration: {log.duration}</span>
+                    </div>
                   </div>
                 </div>
               </div>
-              <div className={`text-[10px] font-black px-2 py-1 rounded-lg border ${
-                log.status === 'ANSWERED' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' :
-                log.status === 'UNANSWERED' ? 'bg-rose-500/10 border-rose-500/30 text-rose-500' :
-                'bg-amber-500/10 border-amber-500/30 text-amber-500'
-              }`}>
-                {log.status === 'ANSWERED' ? 'ANS' : log.status === 'UNANSWERED' ? 'UNANS' : 'BUSY'}
-              </div>
-              <div className="ml-2 flex items-center gap-2">
-                <button onClick={() => setEditingLog(log)} className="px-2 py-1 bg-[#2d3142] rounded-lg text-xs">Edit</button>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className={`text-[10px] font-black px-2 py-1 rounded-lg border ${
+                    log.status === 'ANSWERED' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' :
+                    log.status === 'UNANSWERED' ? 'bg-rose-500/10 border-rose-500/30 text-rose-500' :
+                    'bg-amber-500/10 border-amber-500/30 text-amber-500'
+                  }`}>
+                    {log.status === 'ANSWERED' ? 'ANS' : log.status === 'UNANSWERED' ? 'UNANS' : 'BUSY'}
+                  </div>
+                  {log.reportStatus && (
+                    <div className="text-[10px] font-bold px-2 py-1 rounded-lg bg-purple-500/10 border border-purple-500/30 text-purple-400">
+                      {log.reportStatus}
+                    </div>
+                  )}
+                  {log.textInbound && (
+                    <div className={`text-[10px] font-bold px-2 py-1 rounded-lg ${
+                      log.textInbound === 'YES' ? 'bg-cyan-500/10 border border-cyan-500/30 text-cyan-400' : 'bg-gray-500/10 border border-gray-500/30 text-gray-400'
+                    }`}>
+                      SMS: {log.textInbound}
+                    </div>
+                  )}
+                </div>
+                <button onClick={() => setEditingLog(log)} className="px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded-lg text-xs font-bold transition-colors">Update</button>
               </div>
             </div>
           ))}
@@ -464,7 +550,7 @@ const App: React.FC = () => {
             <button onClick={() => setShowAdminModal(true)} className="w-full bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center justify-center gap-2 text-sm font-semibold">
               Admin
             </button>
-            <button className="w-full bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center justify-center gap-2 text-sm font-semibold">
+            <button onClick={() => setActiveModal('EDIT_SMS_TEMPLATE')} className="w-full bg-[#2d3142] hover:bg-[#3e445a] p-3 rounded-xl transition-colors border border-[#3e445a] flex items-center justify-center gap-2 text-sm font-semibold">
               <LayoutTemplate size={18} /> Template
             </button>
           </div>
@@ -624,7 +710,16 @@ const App: React.FC = () => {
       {/* Sticky Bottom Action */}
       <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-gradient-to-t from-[#0f111a] via-[#0f111a] to-transparent pointer-events-none">
         <div className="pointer-events-auto flex flex-col items-center">
+          {state.isCallActive && (
+            <div className="mb-3 w-full bg-emerald-600/20 border border-emerald-500/30 rounded-xl p-3 text-center">
+              <p className="text-sm font-bold text-emerald-400 flex items-center justify-center gap-2">
+                <Circle size={10} className="fill-emerald-500 text-emerald-500 animate-pulse" />
+                CALL IN PROGRESS - Queue paused
+              </p>
+            </div>
+          )}
           <button
+            disabled={state.isCallActive}
             onClick={() => {
               try {
                 const numbers = queue;
@@ -636,6 +731,7 @@ const App: React.FC = () => {
                 }
                 const sa: any = (window as any).AndroidApp;
                 const intervalMs = Math.max(1000, (state.interval || 5) * 1000);
+                setState(p => ({ ...p, isCallActive: true }));
                 if (sa && typeof sa.startDial === 'function') {
                   // pass interval and post-call wait to native
                   sa.startDial(JSON.stringify(numbers), intervalMs);
@@ -648,15 +744,17 @@ const App: React.FC = () => {
                   showToast(`Starting auto-dial of ${numbers.length} numbers`);
                 } else {
                   // Browser fallback: attempt to open the first tel link
+                  setState(p => ({ ...p, isCallActive: false }));
                   window.location.href = `tel:${numbers[0]}`;
                 }
               } catch (e) {
+                setState(p => ({ ...p, isCallActive: false }));
                 setErrorModal(`Failed to start dialing: ${String(e)}`);
               }
             }}
-            className="w-full gradient-button h-16 rounded-2xl text-white font-black text-xl flex items-center justify-center gap-3 shadow-[0_10px_40px_rgba(168,85,247,0.3)] active:scale-95 transition-transform uppercase tracking-wider"
+            className={`w-full gradient-button h-16 rounded-2xl text-white font-black text-xl flex items-center justify-center gap-3 shadow-[0_10px_40px_rgba(168,85,247,0.3)] active:scale-95 transition-transform uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed`}
           >
-            <PhoneCall size={28} /> Call Now
+            <PhoneCall size={28} /> {state.isCallActive ? 'Call Active...' : 'Call Now'}
           </button>
           <p className="mt-3 text-[10px] text-gray-500 font-medium text-center leading-tight">
             Auto SMS configured · {stats.global.answered} answered today
@@ -702,6 +800,85 @@ const App: React.FC = () => {
             </div>
             <button className="w-full bg-rose-500 text-black font-black py-4 rounded-xl text-sm active:scale-95 transition-transform">UNANSWERED</button>
             <button onClick={closeModal} className="w-full bg-[#2d3142] py-3 rounded-lg font-bold mt-4">Close</button>
+          </div>
+        </Modal>
+      )}
+
+      {activeModal === 'EDIT_SMS_TEMPLATE' && (
+        <Modal title="SMS Templates" onClose={closeModal}>
+          <div className="space-y-4">
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-2">Template for Answered Calls</span>
+              <textarea 
+                className="w-full bg-[#2d3142] border border-[#3e445a] text-white rounded-lg px-3 py-2 h-24 focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm resize-none"
+                value={state.smsTemplateAnswered || ''}
+                onChange={(e) => setState(p => ({ ...p, smsTemplateAnswered: e.target.value }))}
+              />
+              <p className="text-[10px] text-gray-500 mt-1">Sent to calls where status is ANSWERED</p>
+            </div>
+            <div>
+              <span className="text-gray-500 text-[10px] font-bold uppercase block mb-2">Template for Unanswered Calls</span>
+              <textarea 
+                className="w-full bg-[#2d3142] border border-[#3e445a] text-white rounded-lg px-3 py-2 h-24 focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm resize-none"
+                value={state.smsTemplateUnanswered || ''}
+                onChange={(e) => setState(p => ({ ...p, smsTemplateUnanswered: e.target.value }))}
+              />
+              <p className="text-[10px] text-gray-500 mt-1">Sent to calls where status is UNANSWERED</p>
+            </div>
+            <div className="flex gap-2 pt-4">
+              <button onClick={closeModal} className="flex-1 bg-[#2d3142] py-2 rounded-lg font-bold">Cancel</button>
+              <button 
+                onClick={() => {
+                  // Save to localStorage
+                  localStorage.setItem('accm_admin', JSON.stringify({
+                    agentName: state.agentName,
+                    branchName: state.branchName,
+                    series: state.series,
+                    googleSheetId: state.googleSheetId,
+                    smsTemplateAnswered: state.smsTemplateAnswered,
+                    smsTemplateUnanswered: state.smsTemplateUnanswered
+                  }));
+                  closeModal();
+                  showToast('SMS Templates saved');
+                }}
+                className="flex-1 bg-purple-600 py-2 rounded-lg font-bold"
+              >
+                Save Templates
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Updating Progress Modal */}
+      {showUpdatingModal && (
+        <Modal title="Updating" onClose={() => {}}>
+          <div className="space-y-6 text-center py-4">
+            <p className="text-sm text-gray-300">Updating record in progress...</p>
+            <div className="flex justify-center">
+              <div className="relative w-24 h-24">
+                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                  <circle 
+                    cx="50" cy="50" r="45" 
+                    fill="none" 
+                    stroke="#2d3142" 
+                    strokeWidth="4"
+                  />
+                  <circle 
+                    cx="50" cy="50" r="45" 
+                    fill="none" 
+                    stroke="#10b981" 
+                    strokeWidth="4"
+                    strokeDasharray={`${282.7 * (updateProgress / 100)} 282.7`}
+                    strokeLinecap="round"
+                    className="transition-all duration-300"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-2xl font-black text-emerald-500">{updateProgress}%</span>
+                </div>
+              </div>
+            </div>
           </div>
         </Modal>
       )}
@@ -768,15 +945,29 @@ const App: React.FC = () => {
                 state.agentName,
                 '', '',
                 form.textsOutbound ? 'Yes' : 'No',
-                '',
+                form.textInbound || 'No',
                 form.qualified ? 'Yes' : 'No',
                 form.status,
                 form.series
               ];
               const csv = [header, row].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
               const filename = `${state.agentName || 'Agent'} - ${new Date().toLocaleDateString()}.csv`;
+              
+              // Show updating modal
+              setShowUpdatingModal(true);
+              const updateInterval = setInterval(() => {
+                setUpdateProgress(p => Math.min(p + Math.random() * 30, 90));
+              }, 200);
+              
               await uploadCsvToServer(filename, csv);
-              setShowReportModal(null);
+              clearInterval(updateInterval);
+              setUpdateProgress(100);
+              setTimeout(() => {
+                setShowUpdatingModal(false);
+                setUpdateProgress(0);
+                setShowReportModal(null);
+                showToast('Updated successfully');
+              }, 500);
             }}
             onCancel={() => setShowReportModal(null)}
           />
@@ -785,13 +976,30 @@ const App: React.FC = () => {
 
       {/* Edit existing log modal */}
       {editingLog && (
-        <Modal title={`Edit — ${editingLog.number}`} onClose={() => setEditingLog(null)}>
+        <Modal title={`Update — ${editingLog.number}`} onClose={() => setEditingLog(null)}>
           <ReportForm
             initialSeries={editingLog.series ?? state.series ?? state.baseNumber}
             agentName={state.agentName}
             onSubmit={async (form) => {
+              // Show updating modal
+              setShowUpdatingModal(true);
+              setUpdateProgress(0);
+              const updateInterval = setInterval(() => {
+                setUpdateProgress(p => Math.min(p + Math.random() * 30, 90));
+              }, 200);
+
               // update local log
-              setState(prev => ({ ...prev, callLogs: prev.callLogs.map(l => l.id === editingLog.id ? ({ ...l, reportStatus: form.status, qualified: form.qualified, series: form.series }) : l) }));
+              setState(prev => ({ 
+                ...prev, 
+                callLogs: prev.callLogs.map(l => l.id === editingLog.id ? ({ 
+                  ...l, 
+                  reportStatus: form.status as any, 
+                  qualified: form.qualified, 
+                  textInbound: form.textInbound as any,
+                  textOutbound: form.textsOutbound,
+                  series: form.series 
+                }) : l) 
+              }));
 
               // create CSV row and attempt upload
               const header = ['Date','Time Log','Phone Number','Agent Name','Calls','Responses','Texts (Outbound)','Texts (Inbound)','Qualified','Status','Series'];
@@ -802,7 +1010,7 @@ const App: React.FC = () => {
                 state.agentName,
                 '', '',
                 form.textsOutbound ? 'Yes' : 'No',
-                '',
+                form.textInbound || 'No',
                 form.qualified ? 'Yes' : 'No',
                 form.status,
                 form.series
@@ -819,7 +1027,14 @@ const App: React.FC = () => {
                 }
               } catch (e) { console.warn('Android bridge call failed', e); }
 
-              setEditingLog(null);
+              clearInterval(updateInterval);
+              setUpdateProgress(100);
+              setTimeout(() => {
+                setShowUpdatingModal(false);
+                setUpdateProgress(0);
+                setEditingLog(null);
+                showToast('Updated successfully');
+              }, 500);
             }}
             onCancel={() => setEditingLog(null)}
           />
@@ -871,17 +1086,18 @@ const App: React.FC = () => {
 const ReportForm: React.FC<{
   initialSeries: string;
   agentName: string;
-  onSubmit: (data: { phoneNumber: string; qualified: boolean; textsOutbound: boolean; status: string; series: string }) => void;
+  onSubmit: (data: { phoneNumber: string; qualified: boolean; textsOutbound: boolean; textInbound: string; status: string; series: string }) => void;
   onCancel: () => void;
 }> = ({ initialSeries, agentName, onSubmit, onCancel }) => {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [qualified, setQualified] = useState(false);
   const [textsOutbound, setTextsOutbound] = useState(false);
-  const [status, setStatus] = useState('Not Interested');
+  const [textInbound, setTextInbound] = useState('NO');
+  const [status, setStatus] = useState('UNDECIDED');
   const [series, setSeries] = useState(initialSeries);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-h-[80vh] overflow-y-auto">
       <div>
         <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Phone Number</span>
         <Input value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="09xxxxxxxxx" />
@@ -899,16 +1115,33 @@ const ReportForm: React.FC<{
         <Toggle enabled={textsOutbound} onChange={(v) => setTextsOutbound(v)} />
       </div>
       <div>
-        <span className="text-gray-500 text-[10px] font-bold uppercase block mb-1">Status</span>
+        <span className="text-gray-500 text-[10px] font-bold uppercase block mb-2">Text Inbound</span>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => setTextInbound('YES')} 
+            className={`flex-1 py-2 rounded-lg font-bold text-xs transition-colors ${textInbound === 'YES' ? 'bg-cyan-500 text-black' : 'bg-[#2d3142] text-gray-300'}`}
+          >
+            YES
+          </button>
+          <button 
+            onClick={() => setTextInbound('NO')} 
+            className={`flex-1 py-2 rounded-lg font-bold text-xs transition-colors ${textInbound === 'NO' ? 'bg-gray-500 text-white' : 'bg-[#2d3142] text-gray-300'}`}
+          >
+            NO
+          </button>
+        </div>
+      </div>
+      <div>
+        <span className="text-gray-500 text-[10px] font-bold uppercase block mb-2">Status</span>
         <div className="grid grid-cols-2 gap-2">
-          {['Not Interested','Undecided','Documents Sent','Callback'].map(s => (
-            <button key={s} onClick={() => setStatus(s)} className={`py-3 rounded-lg font-bold ${status===s? 'bg-purple-600 text-white':'bg-[#2d3142] text-gray-300'}`}>{s}</button>
+          {['UNDECIDED','CALLBACK','NOT INTERESTED','DOCUMENTS SENT'].map(s => (
+            <button key={s} onClick={() => setStatus(s)} className={`py-3 rounded-lg font-bold text-xs ${status===s? 'bg-purple-600 text-white':'bg-[#2d3142] text-gray-300'}`}>{s}</button>
           ))}
         </div>
       </div>
-      <div className="flex gap-2 pt-2">
+      <div className="flex gap-2 pt-4 border-t border-[#2d3142]">
         <button onClick={onCancel} className="flex-1 bg-[#2d3142] py-2 rounded-lg font-bold">Cancel</button>
-        <button onClick={() => onSubmit({ phoneNumber, qualified, textsOutbound, status, series })} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Submit</button>
+        <button onClick={() => onSubmit({ phoneNumber, qualified, textsOutbound, textInbound, status, series })} className="flex-1 bg-purple-600 py-2 rounded-lg font-bold">Update</button>
       </div>
     </div>
   );
