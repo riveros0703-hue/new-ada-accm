@@ -307,7 +307,7 @@ const App: React.FC = () => {
     const cached = localStorage.getItem('accm_dnc');
     if (cached) return new Set(JSON.parse(cached) as string[]);
     try {
-      const res = await fetch('https://nocollateralloan.org/dnc.txt', { cache: 'force-cache' });
+      const res = await fetch('https://subd.nocollateralloan.org/dnc.txt', { cache: 'force-cache' });
       const txt = await res.text();
       const matches = Array.from(txt.matchAll(/\d{7,}/g)).map(m => m[0]);
       localStorage.setItem('accm_dnc', JSON.stringify(matches));
