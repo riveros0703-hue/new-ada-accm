@@ -136,6 +136,8 @@ const App: React.FC = () => {
   const [successModal, setSuccessModal] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [postCallInterval, setPostCallInterval] = useState<number>(12);
+  const [showOutOfTimeModal, setShowOutOfTimeModal] = useState<boolean>(false);
+  const [outOfTimeCalls, setOutOfTimeCalls] = useState<Array<{ number: string; date: number; duration: number; type: number }>>([]);
 
   const showToast = (msg: string, ms = 2000) => {
     setToast(msg);
@@ -385,14 +387,82 @@ const App: React.FC = () => {
     try {
       const target = `https://subd.nocollateralloan.org/reports/${encodeURIComponent(filename)}`;
       const res = await fetch(target, { method: 'PUT', headers: { 'Content-Type': 'text/csv' }, body: csv });
-      if (!res.ok) throw new Error('Upload failed');
+      if (!res.ok) {
+        // try native bridge fallback
+        const sa: any = (window as any).AndroidApp;
+        if (sa && typeof sa.uploadReport === 'function') {
+          const ok = await new Promise<boolean>((resolve) => {
+            const cbName = `__cb_upload_${Date.now()}`;
+            // @ts-ignore
+            (window as any)[cbName] = (ok: any, message?: any) => {
+              try { /* @ts-ignore */ delete (window as any)[cbName]; } catch (_) {}
+              resolve(Boolean(ok));
+            };
+            try {
+              sa.uploadReport(cbName, filename, csv);
+            } catch (e) {
+              try { /* @ts-ignore */ delete (window as any)[cbName]; } catch (_) {}
+              resolve(false);
+            }
+            setTimeout(() => { try { if ((window as any)[cbName]) { /* @ts-ignore */ delete (window as any)[cbName]; resolve(false); } } catch(_){} }, 10000);
+          });
+          if (ok) { showToast('Uploaded report (native)'); return true; }
+        }
+        throw new Error('Upload failed');
+      }
       showToast('Uploaded report');
       return true;
     } catch (e) {
       console.error(e);
+      // try native bridge fallback if fetch failed entirely
+      try {
+        const sa: any = (window as any).AndroidApp;
+        if (sa && typeof sa.uploadReport === 'function') {
+          const ok = await new Promise<boolean>((resolve) => {
+            const cbName = `__cb_upload_${Date.now()}`;
+            // @ts-ignore
+            (window as any)[cbName] = (ok: any, message?: any) => { try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){}; resolve(Boolean(ok)); };
+            try { sa.uploadReport(cbName, filename, csv); } catch (err) { try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){}; resolve(false); }
+            setTimeout(() => { try { if ((window as any)[cbName]) { /* @ts-ignore */ delete (window as any)[cbName]; resolve(false); } } catch(_){} }, 10000);
+          });
+          if (ok) { showToast('Uploaded report (native)'); return true; }
+        }
+      } catch (_) {}
+
       showToast('Upload failed — check server/CORS');
       return false;
     }
+  };
+
+  const fetchCallsOutsideRange = async (sinceMs: number, untilMs: number) => {
+    const sa: any = (window as any).AndroidApp;
+    if (!sa || typeof sa.fetchCallLogs !== 'function') {
+      showToast('Native bridge not available');
+      return false;
+    }
+    return await new Promise<boolean>((resolve) => {
+      const cbName = `__cb_fetchCalls_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      // @ts-ignore
+      (window as any)[cbName] = (payload: any) => {
+        try {
+          const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+          setOutOfTimeCalls(Array.isArray(parsed) ? parsed : []);
+          setShowOutOfTimeModal(true);
+        } catch (e) {
+          console.warn('fetchCallsOutsideRange parse error', e);
+        } finally {
+          try { /* @ts-ignore */ delete (window as any)[cbName]; } catch (_) {}
+          resolve(true);
+        }
+      };
+      try {
+        sa.fetchCallLogs(cbName, sinceMs, untilMs);
+      } catch (err) {
+        try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){}
+        resolve(false);
+      }
+      setTimeout(() => { try { /* @ts-ignore */ if ((window as any)[cbName]) { delete (window as any)[cbName]; resolve(false); } } catch(_){} }, 10000);
+    });
   };
 
   // SMS sending helper function
@@ -573,6 +643,29 @@ const App: React.FC = () => {
           >
             <Share2 size={20} /> Export All (9am - 6pm)
           </button>
+          <div className="mt-3">
+            <button
+              onClick={async () => {
+                const startInput = window.prompt('Enter start time (ISO or epoch ms). Example: 2026-02-09T09:00 or 1675933200000');
+                if (!startInput) return;
+                const endInput = window.prompt('Enter end time (ISO or epoch ms). Example: 2026-02-09T18:00 or 1675965600000');
+                if (!endInput) return;
+                const parseMs = (v: string) => {
+                  const n = Number(v);
+                  if (!isNaN(n) && String(v).length > 9) return n;
+                  const p = Date.parse(v);
+                  return isNaN(p) ? null : p;
+                };
+                const s = parseMs(startInput);
+                const e = parseMs(endInput);
+                if (!s || !e) { showToast('Invalid time input'); return; }
+                await fetchCallsOutsideRange(s, e);
+              }}
+              className="w-full h-10 bg-[#2d3142] rounded-lg flex items-center justify-center gap-2 text-gray-300 font-bold border border-[#3e445a]"
+            >
+              See Calls Out of Time-frame
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center justify-between mb-4 px-1">
@@ -1213,6 +1306,27 @@ const App: React.FC = () => {
           <div className="space-y-4">
             <p className="text-sm text-emerald-300 whitespace-pre-wrap">{successModal}</p>
             <button onClick={() => setSuccessModal(null)} className="w-full bg-emerald-600 py-2 rounded-lg font-bold">Close</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Out-of-Time-frame Modal */}
+      {showOutOfTimeModal && (
+        <Modal title="Calls Out of Time-frame" onClose={() => setShowOutOfTimeModal(false)}>
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto text-sm">
+            {outOfTimeCalls.length === 0 ? (
+              <p className="text-gray-400">No calls found outside that timeframe.</p>
+            ) : (
+              outOfTimeCalls.map((c, idx) => (
+                <div key={idx} className="p-2 bg-[#0f111a] border border-[#2d3142] rounded-lg">
+                  <div className="flex justify-between text-xs text-gray-300">
+                    <div className="font-mono">{c.number}</div>
+                    <div>{new Date(c.date).toLocaleString()}</div>
+                  </div>
+                  <div className="text-[11px] text-gray-500 mt-1">Duration: {c.duration}s • Type: {c.type}</div>
+                </div>
+              ))
+            )}
           </div>
         </Modal>
       )}
