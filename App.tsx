@@ -138,6 +138,11 @@ const App: React.FC = () => {
   const [postCallInterval, setPostCallInterval] = useState<number>(12);
   const [showOutOfTimeModal, setShowOutOfTimeModal] = useState<boolean>(false);
   const [outOfTimeCalls, setOutOfTimeCalls] = useState<Array<{ number: string; date: number; duration: number; type: number }>>([]);
+  const [eveningCount, setEveningCount] = useState<number | null>(null);
+  const [nightCount, setNightCount] = useState<number | null>(null);
+  const [selectedFilter, setSelectedFilter] = useState<string>('all-day');
+  const [filteredTotal, setFilteredTotal] = useState<number | null>(null);
+  const [filteredMissed, setFilteredMissed] = useState<number | null>(null);
 
   const showToast = (msg: string, ms = 2000) => {
     setToast(msg);
@@ -264,6 +269,23 @@ const App: React.FC = () => {
     } catch (e) {
       // ignore in browser
     }
+
+    // Fetch quick counts for evening and night timeframes
+    (async () => {
+      try {
+        const now = new Date();
+        const eveningStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18,0,0,0).getTime();
+        const eveningEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23,59,59,999).getTime();
+        const nightStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0,1,0,0).getTime();
+        const nightEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7,0,0,0).getTime();
+        const ev = await fetchCallCountInsideRange(eveningStart, eveningEnd);
+        const ni = await fetchCallCountInsideRange(nightStart, nightEnd);
+        setEveningCount(ev);
+        setNightCount(ni);
+      } catch (e) {
+        // ignore
+      }
+    })();
 
     const onlineHandler = () => showToast("You're Online!", 1800);
     const offlineHandler = () => showToast('No internet connection. Exporting will not work.', 4000);
@@ -464,13 +486,109 @@ const App: React.FC = () => {
         }
       };
       try {
-        sa.fetchCallLogs(cbName, sinceMs, untilMs);
+        // call the new range-aware bridge (outside mode)
+        sa.fetchCallLogsRange(cbName, sinceMs, untilMs, false);
       } catch (err) {
         try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){}
         resolve(false);
       }
       setTimeout(() => { try { /* @ts-ignore */ if ((window as any)[cbName]) { delete (window as any)[cbName]; resolve(false); } } catch(_){} }, 10000);
     });
+  };
+
+  const fetchCallCountInsideRange = async (sinceMs: number, untilMs: number) => {
+    const sa: any = (window as any).AndroidApp;
+    if (!sa || typeof sa.fetchCallLogsRange !== 'function') {
+      showToast('Native bridge not available');
+      return 0;
+    }
+    return await new Promise<number>((resolve) => {
+      const cbName = `__cb_count_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      // @ts-ignore
+      (window as any)[cbName] = (payload: any) => {
+        try {
+          const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+          const arr = Array.isArray(parsed) ? parsed : [];
+          resolve(arr.length);
+        } catch (e) {
+          console.warn('fetchCallCountInsideRange parse error', e);
+          resolve(0);
+        } finally { try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){} }
+      };
+      try { sa.fetchCallLogsRange(cbName, sinceMs, untilMs, true); } catch (err) { try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){}; resolve(0); }
+      setTimeout(() => { try { /* @ts-ignore */ if ((window as any)[cbName]) { delete (window as any)[cbName]; resolve(0); } } catch(_){} }, 10000);
+    });
+  };
+
+  const fetchCallsInRange = async (sinceMs: number, untilMs: number) => {
+    const sa: any = (window as any).AndroidApp;
+    if (!sa || typeof sa.fetchCallLogsRange !== 'function') {
+      showToast('Native bridge not available');
+      return false;
+    }
+    showToast('Fetching calls from device...');
+    return await new Promise<boolean>((resolve) => {
+      const cbName = `__cb_fetchCallsIn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      // @ts-ignore
+      (window as any)[cbName] = (payload: any) => {
+        try {
+          const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+          const arr = Array.isArray(parsed) ? parsed : [];
+          if (arr.length === 0) {
+            showToast('No calls found or permission denied. Grant READ_CALL_LOG and retry.');
+            setOutOfTimeCalls([]);
+            setShowOutOfTimeModal(true);
+          } else {
+            setOutOfTimeCalls(arr);
+            setShowOutOfTimeModal(true);
+          }
+        } catch (e) {
+          console.warn('fetchCallsInRange parse error', e);
+        } finally {
+          try { /* @ts-ignore */ delete (window as any)[cbName]; } catch (_) {}
+          resolve(true);
+        }
+      };
+      try {
+        sa.fetchCallLogsRange(cbName, sinceMs, untilMs, true);
+      } catch (err) {
+        try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){ }
+        resolve(false);
+      }
+      setTimeout(() => { try { /* @ts-ignore */ if ((window as any)[cbName]) { delete (window as any)[cbName]; resolve(false); } } catch(_){} }, 10000);
+    });
+  };
+
+  const applyFilter = async (key: string) => {
+    setSelectedFilter(key);
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    let s = dayStart.getTime();
+    let e = dayStart.getTime() + 24*60*60*1000 - 1;
+    if (key === '9-11') { s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0,0,0).getTime(); e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 11,0,0,0).getTime(); }
+    if (key === '11-14') { s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 11, 0,0,0).getTime(); e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 14,0,0,0).getTime(); }
+    if (key === '14-16') { s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 14, 0,0,0).getTime(); e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 16,0,0,0).getTime(); }
+    if (key === '16-18') { s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 16, 0,0,0).getTime(); e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18,0,0,0).getTime(); }
+    if (key === '18-24') { s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0,0,0).getTime(); e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23,59,59,999).getTime(); }
+    if (key === '00-07') { s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 1,0,0).getTime(); e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7,0,0,0).getTime(); }
+    const sa: any = (window as any).AndroidApp;
+    if (!sa) return;
+    showToast('Applying filter...');
+    // fetch calls inside the selected range
+    const cbName = `__cb_filter_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    // @ts-ignore
+    (window as any)[cbName] = (payload: any) => {
+      try {
+        const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+        const arr = Array.isArray(parsed) ? parsed : [];
+        setFilteredTotal(arr.length);
+        const missed = arr.filter((c: any) => c.type === 3).length;
+        setFilteredMissed(missed);
+      } catch (e) { console.warn('applyFilter parse error', e); setFilteredTotal(0); setFilteredMissed(0); }
+      finally { try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){} }
+    };
+    try { sa.fetchCallLogsRange(cbName, s, e, true); } catch (err) { try { /* @ts-ignore */ delete (window as any)[cbName]; } catch(_){} }
+    setTimeout(() => { try { /* @ts-ignore */ if ((window as any)[cbName]) { delete (window as any)[cbName]; setFilteredTotal(0); setFilteredMissed(0); } } catch(_){} }, 10000);
   };
 
   // SMS sending helper function
@@ -643,7 +761,7 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Export All Button */}
+        {/* Export All Button + Timeframe quick list */}
         <div className="mb-8">
           <button 
             onClick={() => exportAll()}
@@ -651,20 +769,28 @@ const App: React.FC = () => {
           >
             <Share2 size={20} /> Export All (9am - 6pm)
           </button>
-          <div className="mt-3">
-            <button
-              onClick={async () => {
-                // compute today's 9:00 and 18:00 local times
-                const now = new Date();
-                const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0, 0).getTime();
-                const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0, 0).getTime();
-                // fetch calls outside 9:00-18:00 (i.e., before 9am or after 6pm)
-                await fetchCallsOutsideRange(start, end);
-              }}
-              className="w-full h-10 bg-[#2d3142] rounded-lg flex items-center justify-center gap-2 text-gray-300 font-bold border border-[#3e445a]"
-            >
-              See Calls Out of Time-frame
-            </button>
+
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <Card className="py-3 flex flex-col items-start" onClick={async () => {
+              const now = new Date();
+              const s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0, 0).getTime();
+              const e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+              await fetchCallsInRange(s, e);
+            }}>
+              <div className="text-xs font-bold text-gray-400 uppercase">Evening</div>
+              <div className="text-lg font-black text-white mt-1">18:00 - 23:59</div>
+              <div className="text-[11px] text-gray-400 mt-2">Calls: {eveningCount === null ? '...' : eveningCount}</div>
+            </Card>
+            <Card className="py-3 flex flex-col items-start" onClick={async () => {
+              const now = new Date();
+              const s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 1, 0, 0).getTime();
+              const e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0, 0).getTime();
+              await fetchCallsInRange(s, e);
+            }}>
+              <div className="text-xs font-bold text-gray-400 uppercase">Night</div>
+              <div className="text-lg font-black text-white mt-1">00:01 - 07:00</div>
+              <div className="text-[11px] text-gray-400 mt-2">Calls: {nightCount === null ? '...' : nightCount}</div>
+            </Card>
           </div>
         </div>
 
@@ -672,7 +798,21 @@ const App: React.FC = () => {
           <span className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
             <BarChart3 size={14} /> Today's Activity
           </span>
-          <span className="text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-2 py-0.5 rounded-full border border-cyan-400/20">All Day: {stats.global.total}</span>
+          <div className="flex items-center gap-2">
+            <select value={selectedFilter} onChange={(e) => applyFilter(e.target.value)} className="bg-[#1c1f2e] border border-[#2d3142] text-white text-[12px] px-2 py-1 rounded-lg">
+              <option value="all-day">All Day</option>
+              <option value="9-11">9:00-11:00</option>
+              <option value="11-14">11:00-14:00</option>
+              <option value="14-16">14:00-16:00</option>
+              <option value="16-18">16:00-18:00</option>
+              <option value="18-24">18:00-23:59</option>
+              <option value="00-07">00:01-07:00</option>
+            </select>
+            <div className="text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-2 py-0.5 rounded-full border border-cyan-400/20">All Day: {stats.global.total}</div>
+            {filteredTotal !== null && (
+              <div className="text-[10px] font-bold text-yellow-300 bg-yellow-700/5 px-2 py-0.5 rounded-full border border-yellow-700/20">Filtered: {filteredTotal} (Missed: {filteredMissed})</div>
+            )}
+          </div>
         </div>
 
         {/* Logs List */}
