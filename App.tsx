@@ -440,14 +440,22 @@ const App: React.FC = () => {
       showToast('Native bridge not available');
       return false;
     }
+    showToast('Fetching calls from device...');
     return await new Promise<boolean>((resolve) => {
       const cbName = `__cb_fetchCalls_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       // @ts-ignore
       (window as any)[cbName] = (payload: any) => {
         try {
           const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
-          setOutOfTimeCalls(Array.isArray(parsed) ? parsed : []);
-          setShowOutOfTimeModal(true);
+          const arr = Array.isArray(parsed) ? parsed : [];
+          if (arr.length === 0) {
+            showToast('No calls found or permission denied. Grant READ_CALL_LOG and retry.');
+            setOutOfTimeCalls([]);
+            setShowOutOfTimeModal(true);
+          } else {
+            setOutOfTimeCalls(arr);
+            setShowOutOfTimeModal(true);
+          }
         } catch (e) {
           console.warn('fetchCallsOutsideRange parse error', e);
         } finally {
@@ -669,7 +677,7 @@ const App: React.FC = () => {
 
         {/* Logs List */}
         <div className="space-y-3">
-          {state.callLogs.slice().reverse().map((log) => (
+          {state.callLogs.slice().reverse().slice(0,200).map((log) => (
             <div 
               key={log.id} 
               className="bg-[#1c1f2e] border border-[#2d3142] p-4 rounded-2xl group active:scale-[0.98] transition-all"
