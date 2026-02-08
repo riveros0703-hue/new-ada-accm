@@ -101,6 +101,12 @@ const App: React.FC = () => {
   const [smsTemplateBeingEdited, setSmsTemplateBeingEdited] = useState<'answered' | 'unanswered' | null>(null);
   const [lastCallStatus, setLastCallStatus] = useState<CallStatus | null>(null);
   const [lastCalledNumber, setLastCalledNumber] = useState<string | null>(null);
+  const [dncNumbers, setDncNumbers] = useState<Set<string>>(new Set());
+  const [dncCount, setDncCount] = useState<number>(0);
+  const [skippedDueToDnc, setSkippedDueToDnc] = useState<boolean>(false);
+  const [dncCountdownSeconds, setDncCountdownSeconds] = useState<number | null>(null);
+  const [awaitingUserFormSubmit, setAwaitingUserFormSubmit] = useState<boolean>(false);
+  const [partialCallData, setPartialCallData] = useState<{ number: string; callStatus: CallStatus } | null>(null);
 
   // computed dialing queue preview
   const queue = useMemo(
@@ -142,6 +148,34 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('accm_admin');
     if (saved) {
       try { const parsed = JSON.parse(saved); setState(prev => ({ ...prev, ...parsed })); } catch(e){}
+    }
+
+    // Initialize DNC on app start
+    const initializeDnc = async () => {
+      try {
+        const dncSet = await fetchDnc();
+        setDncNumbers(dncSet);
+        setDncCount(dncSet.size);
+        // Save count to localStorage
+        localStorage.setItem('accm_dnc_count', dncSet.size.toString());
+        showToast(`DNC loaded: ${dncSet.size} numbers`);
+      } catch (e) {
+        console.error('Failed to load DNC:', e);
+      }
+    };
+
+    // Load DNC if not already cached
+    const cachedDnc = localStorage.getItem('accm_dnc');
+    if (cachedDnc) {
+      try {
+        const parsed = JSON.parse(cachedDnc);
+        setDncNumbers(new Set(parsed));
+        setDncCount(parsed.length);
+      } catch (e) {
+        initializeDnc();
+      }
+    } else {
+      initializeDnc();
     }
 
     // try loading admin from Android bridge if present
@@ -186,8 +220,44 @@ const App: React.FC = () => {
         setLastCalledNumber(phoneNumber);
         setLastCallStatus(callStatus as CallStatus);
         setState(p => ({ ...p, isCallActive: false }));
-        // Trigger auto-SMS after call
+        
+        // Check if this was a DNC number that should have been filtered
+        // Skip logging if it's in DNC
+        if (isNumberInDnc(phoneNumber)) {
+          // Show DNC skip notification with countdown, but don't show form
+          setSkippedDueToDnc(true);
+          setDncCountdownSeconds(3);
+          const dncCountdown = setInterval(() => {
+            setDncCountdownSeconds(prev => {
+              if (prev === null || prev <= 1) {
+                clearInterval(dncCountdown);
+                setDncCountdownSeconds(null);
+                setSkippedDueToDnc(false);
+                // Notify native to proceed to next number
+                const sa: any = (window as any).AndroidApp;
+                if (sa && typeof sa.proceedToNextCall === 'function') {
+                  sa.proceedToNextCall();
+                }
+                return null;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+          return; // Don't show form for DNC numbers
+        }
+        
+        // Trigger auto-SMS after call (only for non-DNC)
         triggerAutoSms(phoneNumber, callStatus as CallStatus);
+        // Set to await user form submission instead of auto-uploading
+        setPartialCallData({ number: phoneNumber, callStatus: callStatus as CallStatus });
+        setAwaitingUserFormSubmit(true);
+        setEditingLog({
+          id: `call_${Date.now()}`,
+          number: phoneNumber,
+          duration: '00:00',
+          status: callStatus as CallStatus,
+          timestamp: new Date()
+        });
       };
     } catch (e) {
       // ignore in browser
@@ -241,11 +311,23 @@ const App: React.FC = () => {
       const txt = await res.text();
       const matches = Array.from(txt.matchAll(/\d{7,}/g)).map(m => m[0]);
       localStorage.setItem('accm_dnc', JSON.stringify(matches));
+      localStorage.setItem('accm_dnc_count', matches.length.toString());
       return new Set(matches);
     } catch (e) {
       showToast('Failed to load DNC (offline?)');
       return new Set<string>();
     }
+  };
+
+  // Check if number is in DNC list
+  const isNumberInDnc = (phoneNumber: string): boolean => {
+    for (const dncNum of dncNumbers) {
+      // Check if DNC number is contained in the phone number or vice versa
+      if (phoneNumber.includes(dncNum) || dncNum.includes(phoneNumber)) {
+        return true;
+      }
+    }
+    return false;
   };
 
   const handleExportRange = async (rangeName: string) => {
@@ -570,6 +652,11 @@ const App: React.FC = () => {
           Queue: {queue.length} {queue.length > 0 ? `· ${queue[0]} → ${queue[queue.length - 1]}` : ''}
           {queue.length === 0 && <span className="text-rose-400"> · No numbers to dial</span>}
         </div>
+        {dncCount > 0 && (
+          <div className="mt-2 text-[11px] text-amber-400 font-medium">
+            🚫 DNC Protection: {dncCount} numbers in list
+          </div>
+        )}
       </Card>
 
       {/* Configuration Section */}
@@ -722,18 +809,30 @@ const App: React.FC = () => {
             disabled={state.isCallActive}
             onClick={() => {
               try {
-                const numbers = queue;
-                if (!numbers.length) {
-                  // ensure countdown cleared if previously set
+                let numbers = queue;
+                // Filter out DNC numbers
+                const dncFilteredNumbers = numbers.filter(num => !isNumberInDnc(num));
+                const dncSkippedCount = numbers.length - dncFilteredNumbers.length;
+
+                if (!dncFilteredNumbers.length) {
                   setCountdown(null);
-                  setErrorModal('Queue is empty. Adjust Last 4 or Attempts.');
+                  setErrorModal(`Queue is empty after DNC filtering. ${dncSkippedCount} numbers were in DNC list.`);
                   return;
                 }
+
+                if (dncSkippedCount > 0) {
+                  showToast(`Starting with ${dncFilteredNumbers.length} numbers (${dncSkippedCount} in DNC)`);
+                } else {
+                  showToast(`Starting auto-dial of ${dncFilteredNumbers.length} numbers`);
+                }
+
+                numbers = dncFilteredNumbers;
                 const sa: any = (window as any).AndroidApp;
                 const intervalMs = Math.max(1000, (state.interval || 5) * 1000);
                 setState(p => ({ ...p, isCallActive: true }));
                 if (sa && typeof sa.startDial === 'function') {
                   // pass interval and post-call wait to native
+                  // IMPORTANT: Pass filtered numbers without DNC entries
                   sa.startDial(JSON.stringify(numbers), intervalMs);
                   if (typeof sa.setPostCallInterval === 'function') {
                     sa.setPostCallInterval(Math.max(0, postCallInterval) * 1000);
@@ -741,7 +840,6 @@ const App: React.FC = () => {
                   if (typeof sa.setDefaultSheetId === 'function') {
                     sa.setDefaultSheetId(state.googleSheetId || DEFAULT_SHEET);
                   }
-                  showToast(`Starting auto-dial of ${numbers.length} numbers`);
                 } else {
                   // Browser fallback: attempt to open the first tel link
                   setState(p => ({ ...p, isCallActive: false }));
@@ -1074,6 +1172,20 @@ const App: React.FC = () => {
           <div className="space-y-4 text-center">
             <p className="text-sm text-gray-300">Proceeding to next call in</p>
             <div className="text-4xl font-black text-purple-400">{countdown}s</div>
+          </div>
+        </Modal>
+      )}
+
+      {/* DNC Skip Notification Modal */}
+      {typeof dncCountdownSeconds === 'number' && dncCountdownSeconds >= 0 && (
+        <Modal title="DNC Detection" onClose={() => setDncCountdownSeconds(null)}>
+          <div className="space-y-6 text-center">
+            <div className="space-y-2">
+              <p className="text-base font-bold text-amber-300">Number detected in DNC</p>
+              <p className="text-sm text-gray-300">Skipping this number...</p>
+            </div>
+            <div className="text-5xl font-black text-amber-400">{dncCountdownSeconds}</div>
+            <p className="text-xs text-gray-500">Moving to next number</p>
           </div>
         </Modal>
       )}
